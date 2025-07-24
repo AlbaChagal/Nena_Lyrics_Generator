@@ -1,4 +1,5 @@
 import datetime
+import json
 import os
 from typing import Union, Optional, List
 
@@ -6,7 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
-from src.global_constants import checkpoints_dir
+from src.global_constants import checkpoints_dir, config_json_name
 from src.train.dataset.char_dataset import CharDataset
 from src.train.dataset.data_manager import DataManager
 from src.train.dataset.word_dataset import WordDataset
@@ -35,6 +36,15 @@ class Trainer:
 
     def get_checkpoint_name(self, epoch: int, step: int) -> str:
         return f"{self.outputs_dir}/checkpoint_{step + int((epoch + 1) * 1000000)}.pt"
+
+    def save_training_config(self) -> None:
+        """
+        Saves the training configuration from self to json file
+        :return: None
+        """
+        training_config: TrainingConfig = self.training_config
+        with open(os.path.join(self.outputs_dir, config_json_name), "w") as f:
+            json.dump(training_config.to_string(), f, indent=4)
 
     def save_checkpoint(self,
                         model_state_dict: dict,
@@ -75,6 +85,8 @@ class Trainer:
         optimizer: torch.optim.Optimizer = torch.optim.Adam(model.parameters(),
                                                             lr=self.training_config.learning_rate)
         print('Initializing Optimizer - Finish')
+
+        self.save_training_config()
 
         checkpoint_path: str
         x: torch.Tensor

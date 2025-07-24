@@ -2,7 +2,7 @@ import os
 from typing import Optional, Dict, Any
 
 import torch
-from src.global_constants import checkpoints_dir
+from src.global_constants import checkpoints_dir, config_json_name
 from src.train.dataset.char_dataset import CharDataset
 from src.train.dataset.data_manager import DataManager
 from src.train.dataset.word_dataset import WordDataset
@@ -115,10 +115,10 @@ if __name__ == "__main__":
     title = "101 luftbaloons"
     model_id = '20250724_104255'
     checkpoint_name = 'checkpoint_1001000.pt'
+    model_dir = os.path.join(checkpoints_dir, model_id)
+    model_path = os.path.join(model_dir, checkpoint_name)
 
-    model_path = os.path.join(checkpoints_dir, model_id, checkpoint_name)
-
-    training_config_main = TrainingConfig()
+    training_config_main = TrainingConfig.from_json(os.path.join(model_dir, config_json_name))
     data_manager = DataManager(training_config=training_config_main)
     generator = SongGenerator(model_path=model_path, training_config=training_config_main, data_manager=data_manager)
     generator.load_model(training_config_main)

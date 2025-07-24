@@ -45,3 +45,8 @@ class TrainingConfig:
         config: 'TrainingConfig' = TrainingConfig()
         config.__dict__ = json.loads(string)
         return config
+
+    @classmethod
+    def from_json(cls, json_str: str) -> 'TrainingConfig':
+        config: 'TrainingConfig' = TrainingConfig.from_string(json_str)
+        return config
