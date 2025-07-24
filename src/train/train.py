@@ -129,6 +129,7 @@ class Trainer:
                                          step=total_num_steps,
                                          total_num_steps=total_num_steps,
                                          embedding_matrix=embedding_matrix)
+        self.tensorboard_logger.close()
 
 
 
