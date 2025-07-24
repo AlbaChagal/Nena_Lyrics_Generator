@@ -8,7 +8,7 @@ from src.global_constants import vocab_file_path
 from src.train.dataset.char_dataset import CharDataset
 from src.train.dataset.word_dataset import WordDataset
 from src.train.pretrained_embedder import Embedder
-from src.train.training_config import TrainingConfig
+from src.train.training_config import TrainingConfig, DatasetType
 
 
 class DataManager:
@@ -67,12 +67,12 @@ class DataManager:
                Optional[Dict[str, int]],
                Optional[Dict[int, str]]]:
         dataset: Union[CharDataset, WordDataset]
-        if training_config.dataset_class == CharDataset:
+        if training_config.dataset_class == DatasetType.CharDataset:
             tokenizer = TokenizerCharLevel()
-        elif training_config.dataset_class == WordDataset:
+        elif training_config.dataset_class == DatasetType.WordDataset:
             tokenizer = TokenizerWordLevel()
         else:
-            raise ValueError(f'unknown dataset class {training_config.dataset_class}')
+            raise ValueError(f'unknown dataset class {training_config.dataset_class.name}')
 
         print('get_dataset - tokenize text - start')
         tokens = tokenizer.tokenize(text)
@@ -85,9 +85,9 @@ class DataManager:
 
         # Dataset
         print('get_dataset - create word dataset - start')
-        if training_config.dataset_class == CharDataset:
+        if training_config.dataset_class == DatasetType.CharDataset:
             dataset: CharDataset = CharDataset(text, block_size=training_config.char_block_size)
-        elif training_config.dataset_class == WordDataset:
+        elif training_config.dataset_class == DatasetType.WordDataset:
             dataset: WordDataset = WordDataset(token_ids, block_size=training_config.word_block_size, vocab=vocab)
         else:
             raise ValueError(f'unknown dataset class {training_config.dataset_class}')

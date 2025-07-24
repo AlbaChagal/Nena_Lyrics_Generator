@@ -6,7 +6,7 @@ from src.global_constants import checkpoints_dir, config_json_name
 from src.train.dataset.char_dataset import CharDataset
 from src.train.dataset.data_manager import DataManager
 from src.train.dataset.word_dataset import WordDataset
-from src.train.training_config import TrainingConfig
+from src.train.training_config import TrainingConfig, DatasetType
 from train.model import Model
 from train.train import Trainer
 
@@ -82,13 +82,13 @@ class SongGenerator:
         assert self.model is not None, 'model must be loaded before calling generate'
 
         input_title: str = input_title
-        if self.training_config.dataset_class == WordDataset:
+        if self.training_config.dataset_class == DatasetType.WordDataset:
             tokens = input_title.lower().split()  # or your custom tokenizer
             input_seq = torch.tensor(
                 [self.word2idx.get(w, 0) for w in tokens],
                 dtype=torch.long
             ).unsqueeze(0)
-        elif self.training_config.dataset_class == CharDataset:
+        elif self.training_config.dataset_class == DatasetType.CharDataset:
             input_seq: torch.Tensor = \
                 torch.tensor(
                     [self.data_manager.word2idx.get(c, 0) for c in input_title],
@@ -113,8 +113,8 @@ if __name__ == "__main__":
     """Infer a model with a single title"""
 
     title = "101 luftbaloons"
-    model_id = '20250724_104255'
-    checkpoint_name = 'checkpoint_1001000.pt'
+    model_id = '20250724_105120'
+    checkpoint_name = 'checkpoint_4030000.pt'
     model_dir = os.path.join(checkpoints_dir, model_id)
     model_path = os.path.join(model_dir, checkpoint_name)
 
