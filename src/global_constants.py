@@ -16,3 +16,4 @@ vocab_file_path = os.path.join(data_dir, "all_lyrics.txt")
 # Training directories
 checkpoints_dir = os.path.join(project_dir, "checkpoints")
 config_json_name = "config.json"
+tensorboard_log_dir = "tensorboard_logs"

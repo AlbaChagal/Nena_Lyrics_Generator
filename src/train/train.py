@@ -7,11 +7,13 @@ import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
-from src.global_constants import checkpoints_dir, config_json_name
+from src.global_constants import checkpoints_dir, config_json_name, tensorboard_log_dir
+
 from src.train.dataset.char_dataset import CharDataset
 from src.train.dataset.data_manager import DataManager
 from src.train.dataset.word_dataset import WordDataset
 from src.train.model import Model
+from src.train.tensorboard_logger import TensorboardLogger
 from src.train.training_config import TrainingConfig
 
 class Trainer:
@@ -22,6 +24,8 @@ class Trainer:
         self.training_config: TrainingConfig = training_config
         self.data_manager: DataManager = data_manager
         self.dataset: Optional[Union[CharDataset, WordDataset]] = None
+        self.tensorboard_logger: TensorboardLogger = \
+            TensorboardLogger(os.path.join(self.outputs_dir, tensorboard_log_dir))
 
     @staticmethod
     def get_device() -> torch.device:
@@ -51,6 +55,7 @@ class Trainer:
                         optimizer_state_dict: dict,
                         epoch: int,
                         step: int,
+                        total_num_steps: int,
                         embedding_matrix) -> None:
         checkpoint_path: str = self.get_checkpoint_name(epoch, step)
         vocab: Union[List[int], List[str]] = self.data_manager.vocab
@@ -64,6 +69,7 @@ class Trainer:
             f=checkpoint_path
         )
         print(f"Model saved to {checkpoint_path}")
+        self.tensorboard_logger.log(total_num_steps)
 
     def train(self):
         device: torch.device = self.get_device()
@@ -109,8 +115,9 @@ class Trainer:
                 loss = F.cross_entropy(logits.view(-1, self.data_manager.dataset.vocab_size), y.view(-1))
                 loss.backward()
                 optimizer.step()
-
-                total_loss += loss.item()
+                loss_item = loss.item()
+                total_loss += loss_item
+                self.tensorboard_logger.update(loss_item)
                 total_num_steps += 1
                 if total_num_steps > 0 and total_num_steps % 100 == 0:
                     print(f"Epoch {epoch + 1}, Step {total_num_steps}, Loss: {loss.item():.4f}")
@@ -120,6 +127,7 @@ class Trainer:
                                          optimizer_state_dict=optimizer.state_dict(),
                                          epoch=epoch,
                                          step=total_num_steps,
+                                         total_num_steps=total_num_steps,
                                          embedding_matrix=embedding_matrix)
 
 
