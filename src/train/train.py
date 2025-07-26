@@ -159,9 +159,9 @@ class Trainer:
                     print(f"Epoch {epoch + 1}, "
                           f"Step {total_num_steps}, "
                           f"Loss: {loss.item():.4f}, "
-                          f"Next Character Loss: {loss_next.item(): .4f}, "
-                          f"Masked Character Loss: {loss_masked.item(): .4f}, "
-                          f"Word Regularization Loss: {loss_word_regulation: .4f}")
+                          f"Next Character Loss: {weighted_loss_next: .4f}, "
+                          f"Masked Character Loss: {weighted_loss_masked: .4f}, "
+                          f"Word Regularization Loss: {weighted_loss_word_regulation: .4f}")
 
                 if total_num_steps > 0 and total_num_steps % self.training_config.save_checkpoint_freq == 0:
                     self.save_checkpoint(model_state_dict=model.state_dict(),
