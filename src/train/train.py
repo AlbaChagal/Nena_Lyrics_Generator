@@ -1,7 +1,7 @@
 import datetime
 import json
 import os
-from typing import Union, Optional, List
+from typing import Union, Optional, List, Tuple
 
 import numpy as np
 import torch
@@ -77,6 +77,37 @@ class Trainer:
         print(f"Model saved to {checkpoint_path}")
         self.tensorboard_logger.log(total_num_steps)
 
+    def calc_all_losses(self,
+                        step: int,
+                        logits: torch.Tensor,
+                        x: torch.tensor,
+                        y_next: torch.Tensor,
+                        y_original: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+        loss_next: torch.Tensor = self.next_loss(logits=logits,
+                                   y=y_next,
+                                   vocab_size=self.data_manager.dataset.vocab_size)
+
+        loss_masked: torch.Tensor = self.mask_loss.forward(x=x,
+                                             y=y_original,
+                                             logits=logits,
+                                             mask_token_idx=self.data_manager.dataset.mask_token_idx)
+
+        loss_word_regulation: torch.Tensor = self.word_regulator_loss.forward(
+            logits=logits,
+            idx2char=self.data_manager.dataset.idx2word
+        )
+
+        weighted_loss_next: torch.Tensor = loss_next * (1 - self.training_config.mask_loss_weight)
+        weighted_loss_masked: torch.Tensor = loss_masked * self.training_config.mask_loss_weight
+
+        word_reg_weight: float = self.training_config.word_regularization_loss_weight if step > 10000 else 0.
+        weighted_loss_word_regulation: torch.Tensor = loss_word_regulation * word_reg_weight
+
+        loss: torch.Tensor = weighted_loss_next + weighted_loss_masked + weighted_loss_word_regulation
+
+        return loss, weighted_loss_next, weighted_loss_masked, weighted_loss_word_regulation
+
+
     def train(self):
         device: torch.device = self.get_device()
         print(f'started training model: {self.model_id} on device: {device}')
@@ -110,8 +141,8 @@ class Trainer:
         weighted_loss_next: torch.Tensor
         loss_masked: torch.Tensor
         weighted_loss_masked: torch.Tensor
-        loss_word_regulation: float
-        weighted_loss_word_regulation: float
+        loss_word_regulation: torch.Tensor
+        weighted_loss_word_regulation: torch.Tensor
         loss: torch.Tensor
 
         print("Training - start")
@@ -126,42 +157,31 @@ class Trainer:
                 optimizer.zero_grad()
                 logits, _ = model(x)
 
-                loss_next = self.next_loss(logits=logits,
-                                           y=y_next,
-                                           vocab_size=self.data_manager.dataset.vocab_size)
-
-                loss_masked = self.mask_loss.forward(x=x,
-                                                     y=y_original,
-                                                     logits=logits,
-                                                     mask_token_idx=self.data_manager.dataset.mask_token_idx)
-
-                loss_word_regulation = self.word_regulator_loss.forward(
-                    logits=logits,
-                    idx2char=self.data_manager.dataset.idx2word
-                )
-
-                weighted_loss_next = loss_next * (1 - self.training_config.mask_loss_weight)
-                weighted_loss_masked = loss_masked * self.training_config.mask_loss_weight
-                weighted_loss_word_regulation = \
-                        loss_word_regulation * self.training_config.word_regularization_loss_weight
-                loss = weighted_loss_next + weighted_loss_masked + weighted_loss_word_regulation
+                loss, weighted_loss_next, weighted_loss_masked, weighted_loss_word_regulation = \
+                    self.calc_all_losses(
+                        logits=logits,
+                        x=x,
+                        y_next=y_next,
+                        y_original=y_original,
+                        step=total_num_steps
+                    )
 
                 loss.backward()
                 optimizer.step()
                 loss_item = loss.item()
                 total_loss += loss_item
-                self.tensorboard_logger.update(loss_item,
-                                               next_loss=loss_next.item(),
-                                               masked_loss=loss_masked.item(),
-                                               word_regularization_loss=loss_word_regulation)
+                self.tensorboard_logger.update(loss=loss_item,
+                                               next_loss=weighted_loss_next.item(),
+                                               masked_loss=weighted_loss_masked.item(),
+                                               word_regularization_loss=weighted_loss_word_regulation.item())
                 total_num_steps += 1
                 if total_num_steps > 0 and total_num_steps % 100 == 0:
                     print(f"Epoch {epoch + 1}, "
                           f"Step {total_num_steps}, "
                           f"Loss: {loss.item():.4f}, "
-                          f"Next Character Loss: {weighted_loss_next: .4f}, "
-                          f"Masked Character Loss: {weighted_loss_masked: .4f}, "
-                          f"Word Regularization Loss: {weighted_loss_word_regulation: .4f}")
+                          f"Next Character Loss: {weighted_loss_next.item(): .4f}, "
+                          f"Masked Character Loss: {weighted_loss_masked.item(): .4f}, "
+                          f"Word Regularization Loss: {weighted_loss_word_regulation.item(): .4f}")
 
                 if total_num_steps > 0 and total_num_steps % self.training_config.save_checkpoint_freq == 0:
                     self.save_checkpoint(model_state_dict=model.state_dict(),
