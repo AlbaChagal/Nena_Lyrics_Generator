@@ -117,7 +117,6 @@ class Trainer:
         print("Training - start")
         total_num_steps: int = 0
         for epoch in range(self.training_config.num_epochs):
-            # print(f'epoch: {epoch + 1} - Start')
             total_loss = 0.0
             for step_in_epoch, (x, y_next, y_original) in enumerate(dataloader):
                 x = x.to(device)
@@ -157,7 +156,12 @@ class Trainer:
                                                word_regularization_loss=loss_word_regulation)
                 total_num_steps += 1
                 if total_num_steps > 0 and total_num_steps % 100 == 0:
-                    print(f"Epoch {epoch + 1}, Step {total_num_steps}, Loss: {loss.item():.4f}")
+                    print(f"Epoch {epoch + 1}, "
+                          f"Step {total_num_steps}, "
+                          f"Loss: {loss.item():.4f}, "
+                          f"Next Character Loss: {loss_next.item(): .4f}, "
+                          f"Masked Character Loss: {loss_masked.item(): .4f}, "
+                          f"Word Regularization Loss: {loss_word_regulation: .4f}")
 
                 if total_num_steps > 0 and total_num_steps % self.training_config.save_checkpoint_freq == 0:
                     self.save_checkpoint(model_state_dict=model.state_dict(),
@@ -167,10 +171,6 @@ class Trainer:
                                          total_num_steps=total_num_steps,
                                          embedding_matrix=embedding_matrix)
         self.tensorboard_logger.close()
-
-
-
-            # print(f"Epoch {epoch + 1} completed, Avg Loss: {total_loss / len(dataloader):.4f}")
 
 
 if __name__ == "__main__":
