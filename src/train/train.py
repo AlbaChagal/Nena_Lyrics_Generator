@@ -6,14 +6,14 @@ from typing import Union, Optional, List
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-import torch.nn.functional as F
 
 from src.global_constants import checkpoints_dir, config_json_name, tensorboard_log_dir
 
 from src.train.dataset.char_dataset import CharDataset
 from src.train.dataset.data_manager import DataManager
 from src.train.dataset.word_dataset import WordDataset
-from src.train.losses import NextCharacterLoss, MaskedCharacterLoss
+from src.train.losses.regularization_loss import WordRegulator
+from src.train.losses.training_losses import NextCharacterLoss, MaskedCharacterLoss
 from src.train.model import Model
 from src.train.tensorboard_logger import TensorboardLogger
 from src.train.training_config import TrainingConfig
@@ -31,6 +31,7 @@ class Trainer:
 
         self.next_loss: NextCharacterLoss = NextCharacterLoss()
         self.mask_loss: MaskedCharacterLoss = MaskedCharacterLoss()
+        self.word_regulator_loss: WordRegulator = WordRegulator()
 
     @staticmethod
     def get_device() -> torch.device:
@@ -109,6 +110,8 @@ class Trainer:
         weighted_loss_next: torch.Tensor
         loss_masked: torch.Tensor
         weighted_loss_masked: torch.Tensor
+        loss_word_regulation: float
+        weighted_loss_word_regulation: float
         loss: torch.Tensor
 
         print("Training - start")
@@ -133,9 +136,16 @@ class Trainer:
                                                      logits=logits,
                                                      mask_token_idx=self.data_manager.dataset.mask_token_idx)
 
+                loss_word_regulation = self.word_regulator_loss.forward(
+                    logits=logits,
+                    idx2char=self.data_manager.dataset.idx2word
+                )
+
                 weighted_loss_next = loss_next * (1 - self.training_config.mask_loss_weight)
                 weighted_loss_masked = loss_masked * self.training_config.mask_loss_weight
-                loss = weighted_loss_next + weighted_loss_masked
+                weighted_loss_word_regulation = \
+                        loss_word_regulation * self.training_config.word_regularization_loss_weight
+                loss = weighted_loss_next + weighted_loss_masked + weighted_loss_word_regulation
 
                 loss.backward()
                 optimizer.step()
@@ -143,7 +153,8 @@ class Trainer:
                 total_loss += loss_item
                 self.tensorboard_logger.update(loss_item,
                                                next_loss=loss_next.item(),
-                                               masked_loss=loss_masked.item())
+                                               masked_loss=loss_masked.item(),
+                                               word_regularization_loss=loss_word_regulation)
                 total_num_steps += 1
                 if total_num_steps > 0 and total_num_steps % 100 == 0:
                     print(f"Epoch {epoch + 1}, Step {total_num_steps}, Loss: {loss.item():.4f}")

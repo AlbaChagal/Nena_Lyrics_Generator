@@ -36,6 +36,7 @@ class TrainingConfig:
         self.learning_rate: float = 0.0001
         self.weight_decay: float = 1e-5
         self.mask_loss_weight: float = 0.5
+        self.word_regularization_loss_weight = 0.5
 
         # Log params
         self.logging_level: str = 'info'
