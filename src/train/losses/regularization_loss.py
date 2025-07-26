@@ -22,11 +22,10 @@ class WordRegulator:
     def forward(self, logits: torch.Tensor, idx2char: Dict[int, str]) -> torch.Tensor:
         predicted_words: List[str] = self.get_words_from_logits(logits, idx2char)
         if len(predicted_words) == 0:
-            return 1.
-        return 1. - (num_real_words / len(predicted_words))
             return torch.tensor(1.0, dtype=torch.float32, device=logits.device)
         num_invalid = sum(1 for word in predicted_words if not self.is_german_word(word))
         penalty = torch.tensor(num_invalid, dtype=torch.float32, device=logits.device)
+        print(f'got words from logits, num invalid: {num_invalid} / {len(predicted_words)}')
         return penalty / len(predicted_words)
 
 
