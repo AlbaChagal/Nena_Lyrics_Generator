@@ -1,6 +1,7 @@
 import os
 from typing import Optional, Dict, Any
 
+import numpy as np
 import torch
 from src.global_constants import checkpoints_dir, config_json_name
 from src.train.dataset.char_dataset import CharDataset
@@ -113,14 +114,19 @@ if __name__ == "__main__":
     """Infer a model with a single title"""
 
     title = "101 luftbaloons"
-    model_id = '20250724_105120'
-    checkpoint_name = 'checkpoint_4030000.pt'
+    model_id = '20250724_174346'
+    checkpoint_name = 'checkpoint_10088000.pt'
     model_dir = os.path.join(checkpoints_dir, model_id)
     model_path = os.path.join(model_dir, checkpoint_name)
 
-    training_config_main = TrainingConfig.from_json(os.path.join(model_dir, config_json_name))
-    data_manager = DataManager(training_config=training_config_main)
-    generator = SongGenerator(model_path=model_path, training_config=training_config_main, data_manager=data_manager)
+    # training_config_main = TrainingConfig.from_json(os.path.join(model_dir, config_json_name))
+    training_config_main = TrainingConfig()
+    random_state = np.random.RandomState(training_config_main.random_seed)
+    data_manager = DataManager(training_config=training_config_main,
+                               random_state=random_state)
+    generator = SongGenerator(model_path=model_path,
+                              training_config=training_config_main,
+                              data_manager=data_manager)
     generator.load_model(training_config_main)
     lyrics = generator.generate(input_title=title)
 

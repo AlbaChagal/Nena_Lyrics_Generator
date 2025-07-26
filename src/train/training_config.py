@@ -24,6 +24,7 @@ class TrainingConfig:
         self.word_block_size: int = 30
 
         # Data params
+        self.random_seed: int = 0
         self.dataset_class: Union[DatasetType, str] = DatasetType.CharDataset
         self.num_epochs: int = 600
         self.batch_size: int = 32
@@ -32,11 +33,12 @@ class TrainingConfig:
         self.save_checkpoint_freq: int = 1000
 
         # Loss params
-        self.learning_rate = 0.0001
-        self.weight_decay = 1e-5
+        self.learning_rate: float = 0.0001
+        self.weight_decay: float = 1e-5
+        self.mask_loss_weight: float = 0.5
 
         # Log params
-        self.logging_level = 'info'
+        self.logging_level: str = 'info'
 
         # Model structure params
         self.is_use_pretrained_model: bool = False
@@ -60,7 +62,7 @@ class TrainingConfig:
     def from_json(cls, json_file_path: str) -> 'TrainingConfig':
         with open(json_file_path, 'r', encoding='utf-8') as f:
             config_json = f.read()
-        config = TrainingConfig()
+        config: 'TrainingConfig' = TrainingConfig()
         config.__dict__ = json.loads(config_json)
         config.dataset_class = getattr(DatasetType, config.dataset_class)
         return config

@@ -1,5 +1,6 @@
 from typing import Optional, Dict, Tuple, Union
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -12,8 +13,12 @@ from src.train.training_config import TrainingConfig, DatasetType
 
 
 class DataManager:
-    def __init__(self, training_config: TrainingConfig, embedding_matrix: Optional[torch.Tensor] = None):
+    def __init__(self,
+                 training_config: TrainingConfig,
+                 random_state: np.random.RandomState,
+                 embedding_matrix: Optional[torch.Tensor] = None):
         self.training_config: TrainingConfig = training_config
+        self.random_state: np.random.RandomState = random_state
         self.dataset: Optional[Union[CharDataset, WordDataset]] = None
         self.tokenizer: Optional[Tokenizer] = None
         self.embedding_matrix: Optional[torch.Tensor] = embedding_matrix
@@ -39,7 +44,7 @@ class DataManager:
         print(f'load_data - load vocab file - finish')
 
         self.dataset, self.word2idx, self.idx2word = \
-            self.get_dataset(training_config=self.training_config, text=text)
+            self.get_dataset(training_config=self.training_config, text=text, random_state=self.random_state)
         print(f'load_data - create emdedding matrix - start')
         if self.embedding_matrix is None:
             self.embedding_matrix = self.get_embedding_matrix(training_config=self.training_config,
@@ -62,7 +67,8 @@ class DataManager:
     @staticmethod
     def get_dataset(
             training_config: TrainingConfig,
-            text: str
+            text: str,
+            random_state: np.random.RandomState
     ) -> Tuple[Union[CharDataset, WordDataset],
                Optional[Dict[str, int]],
                Optional[Dict[int, str]]]:
@@ -86,9 +92,14 @@ class DataManager:
         # Dataset
         print('get_dataset - create word dataset - start')
         if training_config.dataset_class == DatasetType.CharDataset:
-            dataset: CharDataset = CharDataset(text, block_size=training_config.char_block_size)
+            dataset: CharDataset = CharDataset(text,
+                                               block_size=training_config.char_block_size,
+                                               random_state=random_state)
         elif training_config.dataset_class == DatasetType.WordDataset:
-            dataset: WordDataset = WordDataset(token_ids, block_size=training_config.word_block_size, vocab=vocab)
+            dataset: WordDataset = WordDataset(token_ids,
+                                               block_size=training_config.word_block_size,
+                                               vocab=vocab,
+                                               random_state=random_state)
         else:
             raise ValueError(f'unknown dataset class {training_config.dataset_class}')
         print('get_dataset - create word dataset - finish')

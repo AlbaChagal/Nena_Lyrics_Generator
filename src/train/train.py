@@ -3,6 +3,7 @@ import json
 import os
 from typing import Union, Optional, List
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
@@ -12,6 +13,7 @@ from src.global_constants import checkpoints_dir, config_json_name, tensorboard_
 from src.train.dataset.char_dataset import CharDataset
 from src.train.dataset.data_manager import DataManager
 from src.train.dataset.word_dataset import WordDataset
+from src.train.losses import NextCharacterLoss, MaskedCharacterLoss
 from src.train.model import Model
 from src.train.tensorboard_logger import TensorboardLogger
 from src.train.training_config import TrainingConfig
@@ -26,6 +28,9 @@ class Trainer:
         self.dataset: Optional[Union[CharDataset, WordDataset]] = None
         self.tensorboard_logger: TensorboardLogger = \
             TensorboardLogger(os.path.join(self.outputs_dir, tensorboard_log_dir))
+
+        self.next_loss: NextCharacterLoss = NextCharacterLoss()
+        self.mask_loss: MaskedCharacterLoss = MaskedCharacterLoss()
 
     @staticmethod
     def get_device() -> torch.device:
@@ -48,7 +53,7 @@ class Trainer:
         """
         training_config: TrainingConfig = self.training_config
         with open(os.path.join(self.outputs_dir, config_json_name), "w") as f:
-            json.dump(training_config.to_string(), f, indent=4)
+            json.dump(training_config.serialize(), f, indent=4)
 
     def save_checkpoint(self,
                         model_state_dict: dict,
@@ -96,9 +101,14 @@ class Trainer:
 
         checkpoint_path: str
         x: torch.Tensor
-        y: torch.Tensor
+        y_next: torch.Tensor
+        y_original: torch.Tensor
         total_loss: float
         logits: torch.Tensor
+        loss_next: torch.Tensor
+        weighted_loss_next: torch.Tensor
+        loss_masked: torch.Tensor
+        weighted_loss_masked: torch.Tensor
         loss: torch.Tensor
 
         print("Training - start")
@@ -106,18 +116,34 @@ class Trainer:
         for epoch in range(self.training_config.num_epochs):
             # print(f'epoch: {epoch + 1} - Start')
             total_loss = 0.0
-            for step_in_epoch, (x, y) in enumerate(dataloader):
-                x, y = x.to(device), y.to(device)
+            for step_in_epoch, (x, y_next, y_original) in enumerate(dataloader):
+                x = x.to(device)
+                y_next = y_next.to(device)
+                y_original = y_original.to(device)
 
                 optimizer.zero_grad()
                 logits, _ = model(x)
 
-                loss = F.cross_entropy(logits.view(-1, self.data_manager.dataset.vocab_size), y.view(-1))
+                loss_next = self.next_loss(logits=logits,
+                                           y=y_next,
+                                           vocab_size=self.data_manager.dataset.vocab_size)
+
+                loss_masked = self.mask_loss.forward(x=x,
+                                                     y=y_original,
+                                                     logits=logits,
+                                                     mask_token_idx=self.data_manager.dataset.mask_token_idx)
+
+                weighted_loss_next = loss_next * (1 - self.training_config.mask_loss_weight)
+                weighted_loss_masked = loss_masked * self.training_config.mask_loss_weight
+                loss = weighted_loss_next + weighted_loss_masked
+
                 loss.backward()
                 optimizer.step()
                 loss_item = loss.item()
                 total_loss += loss_item
-                self.tensorboard_logger.update(loss_item)
+                self.tensorboard_logger.update(loss_item,
+                                               next_loss=loss_next.item(),
+                                               masked_loss=loss_masked.item())
                 total_num_steps += 1
                 if total_num_steps > 0 and total_num_steps % 100 == 0:
                     print(f"Epoch {epoch + 1}, Step {total_num_steps}, Loss: {loss.item():.4f}")
@@ -138,6 +164,7 @@ class Trainer:
 
 if __name__ == "__main__":
     training_config_main = TrainingConfig()
-    data_manager = DataManager(training_config_main)
+    random_state = np.random.RandomState(training_config_main.random_seed)
+    data_manager = DataManager(training_config_main, random_state=random_state)
     trainer = Trainer(training_config_main, data_manager=data_manager)
     trainer.train()

@@ -6,6 +6,7 @@ project_dir = "/Users/shaharheyman/PycharmProjects/nena_lyrics_generator"
 
 # Global strings
 no_lyrics_on_site_str = 'Kein Songtext vorhanden.'
+mask_character = '¤'
 
 # Data directories
 data_dir = os.path.join(project_dir, "data")
