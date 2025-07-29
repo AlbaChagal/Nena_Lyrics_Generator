@@ -3,13 +3,10 @@ from typing import Optional, Dict, Any
 
 import numpy as np
 import torch
-from src.global_constants import checkpoints_dir, config_json_name
-from src.train.dataset.char_dataset import CharDataset
+from src.global_constants import checkpoints_dir
 from src.train.dataset.data_manager import DataManager
-from src.train.dataset.word_dataset import WordDataset
 from src.train.training_config import TrainingConfig, DatasetType
-from train.model import Model
-from train.train import Trainer
+from src.train.model import Model
 
 
 class SongGenerator:
@@ -57,22 +54,15 @@ class SongGenerator:
         self.data_manager.idx2word = self.idx2word
         self.data_manager.dataset = None  # prevents accidental mismatch
 
-        # Load embedding_matrix if needed
-        if self.training_config.is_use_pretrained_model:
-            _, embedding_matrix = self.data_manager.load_data()  # or load from disk
-        else:
-            embedding_matrix = None
-
         # Construct model using vocab from checkpoint!
         self.model = Model(
             vocab_size=vocab_size,
-            training_config=training_config,
-            embedding_matrix=embedding_matrix
+            training_config=training_config
         )
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.eval()
 
-    def generate(self, input_title, length=500, temperature=0.9):
+    def generate(self, input_title: str, length: int = 500, temperature: float = 0.7):
         """
         The main function for generating songs
         :param input_title: title of the song
@@ -81,6 +71,7 @@ class SongGenerator:
         :return: The generated song
         """
         assert self.model is not None, 'model must be loaded before calling generate'
+        assert self.word2idx is not None, "word2idx must be set before generating lyrics"
 
         input_title: str = input_title
         if self.training_config.dataset_class == DatasetType.WordDataset:
@@ -97,16 +88,14 @@ class SongGenerator:
                 ).unsqueeze(0)
         output_text: str = input_title + '\n\n'
 
+        assert self.idx2word is not None, "idx2word must be set before generating lyrics"
         with torch.no_grad():
-            for _ in range(length):
-                logits, _ = self.model(input_seq)
-                logits = logits[:, -1, :] / temperature
-                probs = torch.nn.functional.softmax(logits, dim=-1)
-                next_char_idx = torch.multinomial(probs, num_samples=1).item()
-                next_char = self.data_manager.idx2word[next_char_idx]
+            # Use model's autoregressive generation
+            generated = self.model(src=input_seq, max_length=length, start_token_idx=0)
+            # generated: (1, length)
+            for idx in generated[0]:
+                next_char = self.idx2word[idx.item()]
                 output_text += next_char
-
-                input_seq = torch.tensor([[next_char_idx]], dtype=torch.long)
 
         return output_text
 

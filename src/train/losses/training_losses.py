@@ -1,5 +1,4 @@
 import torch
-from torch import nn
 
 
 class NextCharacterLoss(torch.nn.Module):
@@ -30,3 +29,8 @@ class MaskedCharacterLoss(torch.nn.Module):
             loss_masked = torch.tensor(0.0, device=logits.device)
 
         return loss_masked
+
+
+class TitleToLyricsLoss(NextCharacterLoss):
+    def __init__(self):
+        super(TitleToLyricsLoss, self).__init__()

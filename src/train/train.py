@@ -12,29 +12,40 @@ from src.global_constants import checkpoints_dir, config_json_name, tensorboard_
 from src.train.dataset.char_dataset import CharDataset
 from src.train.dataset.data_manager import DataManager
 from src.train.dataset.word_dataset import WordDataset
-from src.train.losses.regularization_loss import WordRegulator
-from src.train.losses.training_losses import NextCharacterLoss, MaskedCharacterLoss
+from src.train.losses.regularization_loss import WordsInTextCounter
+from src.train.losses.training_losses import NextCharacterLoss, MaskedCharacterLoss, TitleToLyricsLoss
 from src.train.model import Model
 from src.train.tensorboard_logger import TensorboardLogger
 from src.train.training_config import TrainingConfig
 
 class Trainer:
-    def __init__(self, training_config: TrainingConfig, data_manager: DataManager):
+    def __init__(self, training_config: TrainingConfig, data_manager: DataManager, is_debug: bool = False):
+        """
+        Initializes the Trainer with the given training configuration and data manager.
+        :param training_config: Training configuration object containing hyperparameters and settings.
+        :param data_manager: Data manager object to handle datasets and tokenization.
+        :param is_debug: If True, enables debug mode for additional logging.
+        """
+
+        self.is_debug: bool = is_debug
         self.model_id: str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.outputs_dir: str = os.path.join(checkpoints_dir, self.model_id)
         os.makedirs(self.outputs_dir, exist_ok=True)
         self.training_config: TrainingConfig = training_config
         self.data_manager: DataManager = data_manager
         self.dataset: Optional[Union[CharDataset, WordDataset]] = None
-        self.tensorboard_logger: TensorboardLogger = \
-            TensorboardLogger(os.path.join(self.outputs_dir, tensorboard_log_dir))
+        self.train_tensorboard_logger: TensorboardLogger = \
+            TensorboardLogger(os.path.join(self.outputs_dir, tensorboard_log_dir, 'train'))
+        self.val_tensorboard_logger: TensorboardLogger = \
+            TensorboardLogger(os.path.join(self.outputs_dir, tensorboard_log_dir, 'val'))
 
         self.next_loss: NextCharacterLoss = NextCharacterLoss()
         self.mask_loss: MaskedCharacterLoss = MaskedCharacterLoss()
-        self.word_regulator_loss: WordRegulator = WordRegulator()
+        self.ttl_loss: TitleToLyricsLoss = TitleToLyricsLoss()
+        self.word_regulator_loss: WordsInTextCounter = WordsInTextCounter(is_debug=self.is_debug)
 
     @staticmethod
-    def get_device() -> torch.device:
+    def get_device(is_debug: bool = False) -> torch.device:
         device: torch.device
         if torch.cuda.is_available():
             device = torch.device("cuda")
@@ -42,6 +53,8 @@ class Trainer:
             device = torch.device("mps")
         else:
             device = torch.device("cpu")
+        if is_debug:
+            print(f"Using device: {device}")
         return device
 
     def get_checkpoint_name(self, epoch: int, step: int) -> str:
@@ -55,6 +68,8 @@ class Trainer:
         training_config: TrainingConfig = self.training_config
         with open(os.path.join(self.outputs_dir, config_json_name), "w") as f:
             json.dump(training_config.serialize(), f, indent=4)
+        if self.is_debug:
+            print(f"Training configuration saved to {os.path.join(self.outputs_dir, config_json_name)}")
 
     def save_checkpoint(self,
                         model_state_dict: dict,
@@ -62,7 +77,7 @@ class Trainer:
                         epoch: int,
                         step: int,
                         total_num_steps: int,
-                        embedding_matrix) -> None:
+                        embedding_matrix: Optional[torch.Tensor]) -> None:
         checkpoint_path: str = self.get_checkpoint_name(epoch, step)
         vocab: Union[List[int], List[str]] = self.data_manager.vocab
         torch.save(
@@ -75,113 +90,107 @@ class Trainer:
             f=checkpoint_path
         )
         print(f"Model saved to {checkpoint_path}")
-        self.tensorboard_logger.log(total_num_steps)
 
-    def calc_all_losses(self,
-                        step: int,
-                        logits: torch.Tensor,
-                        x: torch.tensor,
-                        y_next: torch.Tensor,
-                        y_original: torch.Tensor) -> Tuple[torch.Tensor, ...]:
-        loss_next: torch.Tensor = self.next_loss(logits=logits,
-                                   y=y_next,
-                                   vocab_size=self.data_manager.dataset.vocab_size)
+        self.train_tensorboard_logger.log(total_num_steps)
+        print(f"logged training step {total_num_steps} to Tensorboard at {self.train_tensorboard_logger.log_dir}")
 
-        loss_masked: torch.Tensor = self.mask_loss.forward(x=x,
-                                             y=y_original,
-                                             logits=logits,
-                                             mask_token_idx=self.data_manager.dataset.mask_token_idx)
-
-        loss_word_regulation: torch.Tensor = self.word_regulator_loss.forward(
-            logits=logits,
-            idx2char=self.data_manager.dataset.idx2word
-        )
-
-        weighted_loss_next: torch.Tensor = loss_next * (1 - self.training_config.mask_loss_weight)
-        weighted_loss_masked: torch.Tensor = loss_masked * self.training_config.mask_loss_weight
-
-        word_reg_weight: float = self.training_config.word_regularization_loss_weight if step > 10000 else 0.
-        weighted_loss_word_regulation: torch.Tensor = loss_word_regulation * word_reg_weight
-
-        loss: torch.Tensor = weighted_loss_next + weighted_loss_masked + weighted_loss_word_regulation
-
-        return loss, weighted_loss_next, weighted_loss_masked, weighted_loss_word_regulation
+    def calc_loss(self, logits: torch.Tensor, y: torch.Tensor, vocab_size: int, is_debug: bool = False) -> torch.Tensor:
+        # logits: (batch_size, seq_len, vocab_size)
+        # y: (batch_size, seq_len)
+        if is_debug:
+            print(f"logits.shape: {logits.shape}")
+            print(f"y.shape: {y.shape}")
+            print(f"vocab_size: {vocab_size}")
+            print(f"logits.numel(): {logits.numel()}, y.numel(): {y.numel()}")
+        loss_fn = torch.nn.CrossEntropyLoss(ignore_index=0)  # assuming 0 is <PAD>
+        seq_len_logits = logits.shape[1]
+        y_target = y[:, 1:1+seq_len_logits]  # match logits' sequence length
+        logits_flat = logits.contiguous().view(-1, vocab_size)
+        y_flat = y_target.contiguous().view(-1)
+        if is_debug:
+            print(f"logits_flat.shape: {logits_flat.shape}, y_flat.shape: {y_flat.shape}")
+        loss: torch.Tensor = loss_fn(logits_flat, y_flat)
+        return loss * self.training_config.loss_weight
 
 
     def train(self):
+
         device: torch.device = self.get_device()
         print(f'started training model: {self.model_id} on device: {device}')
 
-        dataloader: DataLoader
-        embedding_matrix: Optional[torch.Tensor]
-        print('Loading data managers - Start')
-        dataloader, embedding_matrix = self.data_manager.load_data()
-        print('Loading data managers - Finish')
+        # Load data and split into train/val
+        dataloader = self.data_manager.load_data()
+        # Split ttl_dataloader into train and val
+        ttl_dataset = dataloader.dataset
+        val_split = 0.1
+        val_size = int(len(ttl_dataset) * val_split)
+        train_size = len(ttl_dataset) - val_size
+        train_dataset, val_dataset = torch.utils.data.random_split(ttl_dataset, [train_size, val_size])
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=True)
+        print(f'Train dataset size: {len(train_dataset)}')
+        print(f'Validation dataset size: {len(val_dataset)}')
+        val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=False)
 
-        print('Initializing model - Start')
-        model: Model = Model(vocab_size=self.data_manager.dataset.vocab_size,
-                             embedding_matrix=embedding_matrix,
+        assert self.data_manager.dataset is not None, "Dataset is not initialized"
+        model: Model = Model(vocab_size=len(self.data_manager.dataset),
                              training_config=self.training_config).to(device)
-        print('Initializing model - Finish')
+        if self.is_debug:
+            print('Initialized model')
 
-        print('Initializing Optimizer - Start')
+        vocab_size = len(self.data_manager.dataset.vocab)
+        model: Model = Model(vocab_size=vocab_size,
+                            training_config=self.training_config).to(device)
+        if self.is_debug:
+            print(f'Initialized model with vocab_size={vocab_size}')
+
         optimizer: torch.optim.Optimizer = torch.optim.Adam(model.parameters(),
                                                             lr=self.training_config.learning_rate)
-        print('Initializing Optimizer - Finish')
+        
+        if self.is_debug:
+            print('Initialized Optimizer')
 
         self.save_training_config()
 
-        checkpoint_path: str
-        x: torch.Tensor
-        y_next: torch.Tensor
-        y_original: torch.Tensor
         total_loss: float
         logits: torch.Tensor
-        loss_next: torch.Tensor
-        weighted_loss_next: torch.Tensor
-        loss_masked: torch.Tensor
-        weighted_loss_masked: torch.Tensor
-        loss_word_regulation: torch.Tensor
-        weighted_loss_word_regulation: torch.Tensor
         loss: torch.Tensor
+
+        title: torch.Tensor
 
         print("Training - start")
         total_num_steps: int = 0
+
         for epoch in range(self.training_config.num_epochs):
             total_loss = 0.0
-            for step_in_epoch, (x, y_next, y_original) in enumerate(dataloader):
-                x = x.to(device)
-                y_next = y_next.to(device)
-                y_original = y_original.to(device)
-
-                optimizer.zero_grad()
-                logits, _ = model(x)
-
-                loss, weighted_loss_next, weighted_loss_masked, weighted_loss_word_regulation = \
-                    self.calc_all_losses(
-                        logits=logits,
-                        x=x,
-                        y_next=y_next,
-                        y_original=y_original,
-                        step=total_num_steps
-                    )
+            for ttl_step_in_epoch, (title, lyrics) in enumerate(train_loader):
+                title = title.to(device)
+                lyrics = lyrics.to(device)
+                max_length = lyrics.size(1)
+                logits = model(src=title, tgt=lyrics, max_length=max_length, start_token_idx=0, return_logits=True)
+                assert self.data_manager.dataset is not None, "Dataset is not initialized"
+                vocab_size = len(self.data_manager.dataset.vocab)
+                loss = self.calc_loss(logits=logits, y=lyrics, vocab_size=vocab_size, is_debug=self.is_debug)
 
                 loss.backward()
                 optimizer.step()
+                optimizer.zero_grad()
                 loss_item = loss.item()
                 total_loss += loss_item
-                self.tensorboard_logger.update(loss=loss_item,
-                                               next_loss=weighted_loss_next.item(),
-                                               masked_loss=weighted_loss_masked.item(),
-                                               word_regularization_loss=weighted_loss_word_regulation.item())
+
+                with torch.no_grad():
+                    word_percentage_in_output: float = self.word_regulator_loss.count_valid_words(
+                        logits=logits,
+                        idx2char=self.data_manager.dataset.idx2word
+                    )
+
+                self.train_tensorboard_logger.update(loss=loss_item, 
+                                                     word_percentage_in_output=word_percentage_in_output)
                 total_num_steps += 1
                 if total_num_steps > 0 and total_num_steps % 100 == 0:
                     print(f"Epoch {epoch + 1}, "
                           f"Step {total_num_steps}, "
-                          f"Loss: {loss.item():.4f}, "
-                          f"Next Character Loss: {weighted_loss_next.item(): .4f}, "
-                          f"Masked Character Loss: {weighted_loss_masked.item(): .4f}, "
-                          f"Word Regularization Loss: {weighted_loss_word_regulation.item(): .4f}")
+                          f"Loss: {loss.item():.4f}, " 
+                          f"Word Percentage in Output: {word_percentage_in_output:.4f}")
 
                 if total_num_steps > 0 and total_num_steps % self.training_config.save_checkpoint_freq == 0:
                     self.save_checkpoint(model_state_dict=model.state_dict(),
@@ -189,13 +198,39 @@ class Trainer:
                                          epoch=epoch,
                                          step=total_num_steps,
                                          total_num_steps=total_num_steps,
-                                         embedding_matrix=embedding_matrix)
-        self.tensorboard_logger.close()
+                                         embedding_matrix=None)
+
+                    val_loss = 0.0
+                    with torch.no_grad():
+                        for val_title, val_lyrics in val_loader:
+                            val_title = val_title.to(device)
+                            val_lyrics = val_lyrics.to(device)
+                            max_length = val_lyrics.size(1)
+                            val_logits = model(src=val_title, tgt=val_lyrics, max_length=max_length, start_token_idx=0, return_logits=True)
+                            vocab_size = len(self.data_manager.dataset.vocab)
+                            loss = self.calc_loss(logits=val_logits, y=val_lyrics, vocab_size=vocab_size)
+                            val_loss += loss.item()
+
+                            word_percentage_in_output_val: float = self.word_regulator_loss.count_valid_words(
+                                logits=val_logits,
+                                idx2char=self.data_manager.dataset.idx2word
+                            )
+
+                            self.val_tensorboard_logger.update(loss=loss.item(), 
+                                                               word_percentage_in_output=word_percentage_in_output_val)
+                    avg_val_loss = val_loss / len(val_loader)
+                    print(f"Epoch {epoch + 1} Validation Loss: {avg_val_loss:.4f}")
+                    # Log validation loss and perplexity to Tensorboard
+                    self.val_tensorboard_logger.log(total_num_steps)
+
+        self.train_tensorboard_logger.close()
 
 
 if __name__ == "__main__":
+    is_debug_main = False
+
     training_config_main = TrainingConfig()
     random_state = np.random.RandomState(training_config_main.random_seed)
-    data_manager = DataManager(training_config_main, random_state=random_state)
-    trainer = Trainer(training_config_main, data_manager=data_manager)
+    data_manager = DataManager(training_config_main, random_state=random_state, is_debug=is_debug_main)
+    trainer = Trainer(training_config_main, data_manager=data_manager, is_debug=is_debug_main)
     trainer.train()

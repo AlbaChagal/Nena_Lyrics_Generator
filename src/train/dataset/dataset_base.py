@@ -7,7 +7,7 @@ from torch.utils.data import Dataset
 
 class DatasetBase(Dataset):
     def __init__(self,
-                 data: Optional[List[int]],
+                 data: List[int],
                  block_size: int,
                  random_state: np.random.RandomState,
                  mask_prob: float = 0.5) -> None:

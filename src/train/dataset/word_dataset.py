@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -17,6 +17,8 @@ class WordDataset(DatasetBase):
         self.vocab: List[str] = vocab
         self.vocab.append(mask_character)
         self.vocab_size: int = len(vocab)
+        self.word2idx: Dict[str, int] = {word: idx for idx, word in enumerate(self.vocab)}
+        self.idx2word: Dict[int, str] = {idx: word for idx, word in enumerate(self.vocab)}
         self.mask_token_idx = mask_token_idx if mask_token_idx is not None else self.vocab.index(mask_character)
 
     @property

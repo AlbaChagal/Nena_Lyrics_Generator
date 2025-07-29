@@ -6,47 +6,71 @@ from torch import nn
 from src.train.pretrained_embedder import Embedder
 from src.train.training_config import TrainingConfig
 
-
 class Model(nn.Module):
     def __init__(self,
+                 vocab_size: int,
                  training_config: TrainingConfig,
-                 vocab_size: Optional[int] = None,
-                 embedding_matrix: Optional[torch.Tensor] = None,
                  embedding_dim: int = 256,
-                 hidden_dim: int = 512,
-                 dropout: float = 0.2):
+                 nhead: int = 8,
+                 num_encoder_layers: int = 6,
+                 num_decoder_layers: int = 6,
+                 dim_feedforward: int = 1024,
+                 dropout: float = 0.1,
+                 max_seq_len: int = 1024):
+        super().__init__()
 
-        super(Model, self).__init__()
+        self.embedding: nn.Embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.positional_encoding = self._generate_positional_encoding(max_seq_len, embedding_dim)
 
-        self.training_config = training_config
-        if self.training_config.is_use_pretrained_model:
-            assert embedding_matrix is not None, \
-                'embedding_matrix must be provided when loading a pretrained embedder'
-            self.embedder = nn.Embedding.from_pretrained(
-                embeddings=embedding_matrix,
-                freeze=True
-            )
-            embedding_dim = embedding_matrix.shape[1]  # Ensure consistency
-        else:
-            assert vocab_size is not None, \
-                'vocab_size must be provided when loading an untrained embedder'
-            self.embedder = nn.Embedding(num_embeddings=vocab_size,
-                                         embedding_dim=embedding_dim)
-
-        self.lstm: nn.LSTM = nn.LSTM(
-            input_size=embedding_dim,
-            hidden_size=hidden_dim,
-            num_layers=8,
+        self.transformer: nn.Transformer = nn.Transformer(
+            d_model=embedding_dim,
+            nhead=nhead,
+            num_encoder_layers=num_encoder_layers,
+            num_decoder_layers=num_decoder_layers,
+            dim_feedforward=dim_feedforward,
             dropout=dropout,
             batch_first=True
         )
-        self.fc: nn.Linear = nn.Linear(in_features=hidden_dim,
-                                       out_features=vocab_size)
 
-    def forward(self, x):
-        x_embedded = self.embedder(x)
-        output, hidden = self.lstm(x_embedded)
-        logits = self.fc(output)
-        return logits, hidden
+        self.output_fc: nn.Linear = nn.Linear(embedding_dim, vocab_size)
 
+    @staticmethod
+    def _generate_positional_encoding(max_len: int, model_dim: int) -> torch.Tensor:
+        position: torch.Tensor = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, model_dim, 2) * (-torch.log(torch.tensor(10000.0)) / model_dim))
+        pe: torch.Tensor = torch.zeros(max_len, model_dim)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        return pe.unsqueeze(0)  # shape (1, max_len, d_model)
 
+    def forward(
+        self,
+        src: torch.Tensor,
+        tgt: Optional[torch.Tensor] = None,
+        max_length: int = 128,
+        start_token_idx: int = 0,
+        return_logits: bool = False
+    ) -> torch.Tensor:
+        batch_size = src.size(0)
+        device = src.device
+        src_emb = self.embedding(src) + self.positional_encoding[:, :src.size(1), :].to(device)
+
+        if return_logits and tgt is not None:
+            # Teacher forcing for training: return logits for all steps
+            tgt_input = tgt[:, :-1]  # Remove last token (usually <EOS>)
+            tgt_emb = self.embedding(tgt_input) + self.positional_encoding[:, :tgt_input.size(1), :].to(device)
+            tgt_mask = self.transformer.generate_square_subsequent_mask(tgt_input.size(1)).to(device)
+            output = self.transformer(src=src_emb, tgt=tgt_emb, tgt_mask=tgt_mask)
+            logits = self.output_fc(output)  # (batch_size, tgt_seq_len, vocab_size)
+            return logits
+        else:
+            # Autoregressive generation for inference
+            generated = torch.full((batch_size, 1), start_token_idx, dtype=torch.long, device=device)
+            for _ in range(max_length):
+                tgt_emb = self.embedding(generated) + self.positional_encoding[:, :generated.size(1), :].to(device)
+                tgt_mask = self.transformer.generate_square_subsequent_mask(generated.size(1)).to(device)
+                output = self.transformer(src=src_emb, tgt=tgt_emb, tgt_mask=tgt_mask)
+                logits = self.output_fc(output[:, -1:, :])  # last token logits
+                next_token = torch.argmax(logits, dim=-1)
+                generated = torch.cat([generated, next_token], dim=1)
+            return generated[:, 1:]

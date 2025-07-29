@@ -1,13 +1,9 @@
 import json
 import os
 from enum import Enum
-from typing import Union, Any, Dict
-
-from torch.utils.data import Dataset
+from typing import Union
 
 from src.global_constants import config_json_name
-from src.train.dataset.char_dataset import CharDataset
-from src.train.dataset.word_dataset import WordDataset
 
 class DatasetType(Enum):
     WordDataset = 'WordDataset'
@@ -17,6 +13,7 @@ class TrainingConfig:
     def __init__(self):
 
         # Pretrained embedder params
+        self.loss_weight = 0.5
         self.embedder_dim: int = 300
 
         # Tokenizer params
@@ -25,7 +22,7 @@ class TrainingConfig:
 
         # Data params
         self.random_seed: int = 0
-        self.dataset_class: Union[DatasetType, str] = DatasetType.CharDataset
+        self.dataset_class: Union[DatasetType, str] = DatasetType.WordDataset
         self.num_epochs: int = 600
         self.batch_size: int = 32
 
@@ -35,8 +32,6 @@ class TrainingConfig:
         # Loss params
         self.learning_rate: float = 0.0001
         self.weight_decay: float = 1e-5
-        self.mask_loss_weight: float = 0.5
-        self.word_regularization_loss_weight = 2.
 
         # Log params
         self.logging_level: str = 'info'

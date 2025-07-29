@@ -1,6 +1,6 @@
 import os
 
-from src.global_constants import clean_lyrics_dir, vocab_file_path
+from src.global_constants import clean_lyrics_dir, char_vocab_file_path
 
 
 class TextAccumulator:
@@ -13,7 +13,7 @@ class TextAccumulator:
         :param preprocessed_text_dir: path to preprocessed text file
         """
         self.preprocessed_text_dir: str = preprocessed_text_dir
-        self.output_path: str = vocab_file_path
+        self.output_path: str = char_vocab_file_path
 
     def combine_lyrics(self):
         """

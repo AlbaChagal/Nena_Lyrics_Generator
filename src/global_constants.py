@@ -12,7 +12,8 @@ mask_character = '¤'
 data_dir = os.path.join(project_dir, "data")
 raw_lyrics_dir = os.path.join(data_dir, "raw_lyrics")
 clean_lyrics_dir = os.path.join(data_dir, "clean_lyrics")
-vocab_file_path = os.path.join(data_dir, "all_lyrics.txt")
+char_vocab_file_path = os.path.join(data_dir, "char_all_lyrics.txt")
+word_vocab_file_path = os.path.join(data_dir, "word_all_lyrics.txt")
 
 # Training directories
 checkpoints_dir = os.path.join(project_dir, "checkpoints")
