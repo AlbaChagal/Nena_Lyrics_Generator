@@ -162,14 +162,15 @@ class Trainer:
 
         for epoch in range(self.training_config.num_epochs):
             total_loss = 0.0
-            for ttl_step_in_epoch, (title, lyrics) in enumerate(train_loader):
-                title = title.to(device)
-                lyrics = lyrics.to(device)
-                max_length = lyrics.size(1)
-                logits = model(src=title, tgt=lyrics, max_length=max_length, start_token_idx=0, return_logits=True)
+            # The dataset now yields (input, target) pairs for random prefixes (autoregressive training)
+            for ttl_step_in_epoch, (input_tensor, target_tensor) in enumerate(train_loader):
+                input_tensor = input_tensor.to(device)
+                target_tensor = target_tensor.to(device)
+                max_length = target_tensor.size(1)
+                logits = model(src=input_tensor, tgt=target_tensor, max_length=max_length, start_token_idx=0, return_logits=True)
                 assert self.data_manager.dataset is not None, "Dataset is not initialized"
                 vocab_size = len(self.data_manager.dataset.vocab)
-                loss = self.calc_loss(logits=logits, y=lyrics, vocab_size=vocab_size, is_debug=self.is_debug)
+                loss = self.calc_loss(logits=logits, y=target_tensor, vocab_size=vocab_size, is_debug=self.is_debug)
 
                 loss.backward()
                 optimizer.step()
@@ -178,9 +179,12 @@ class Trainer:
                 total_loss += loss_item
 
                 with torch.no_grad():
+                    idx2char = getattr(self.data_manager.dataset, 'idx2word', None)
+                    if idx2char is None:
+                        idx2char = {}
                     word_percentage_in_output: float = self.word_regulator_loss.count_valid_words(
                         logits=logits,
-                        idx2char=self.data_manager.dataset.idx2word
+                        idx2char=idx2char
                     )
 
                 self.train_tensorboard_logger.update(loss=loss_item, 
@@ -202,18 +206,21 @@ class Trainer:
 
                     val_loss = 0.0
                     with torch.no_grad():
-                        for val_title, val_lyrics in val_loader:
-                            val_title = val_title.to(device)
-                            val_lyrics = val_lyrics.to(device)
-                            max_length = val_lyrics.size(1)
-                            val_logits = model(src=val_title, tgt=val_lyrics, max_length=max_length, start_token_idx=0, return_logits=True)
+                        for val_input, val_target in val_loader:
+                            val_input = val_input.to(device)
+                            val_target = val_target.to(device)
+                            max_length = val_target.size(1)
+                            val_logits = model(src=val_input, tgt=val_target, max_length=max_length, start_token_idx=0, return_logits=True)
                             vocab_size = len(self.data_manager.dataset.vocab)
-                            loss = self.calc_loss(logits=val_logits, y=val_lyrics, vocab_size=vocab_size)
+                            loss = self.calc_loss(logits=val_logits, y=val_target, vocab_size=vocab_size)
                             val_loss += loss.item()
 
+                            idx2char = getattr(self.data_manager.dataset, 'idx2word', None)
+                            if idx2char is None:
+                                idx2char = {}
                             word_percentage_in_output_val: float = self.word_regulator_loss.count_valid_words(
                                 logits=val_logits,
-                                idx2char=self.data_manager.dataset.idx2word
+                                idx2char=idx2char
                             )
 
                             self.val_tensorboard_logger.update(loss=loss.item(), 

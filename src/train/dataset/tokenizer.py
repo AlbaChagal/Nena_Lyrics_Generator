@@ -54,11 +54,9 @@ class TokenizerWordLevel(Tokenizer):
     def tokenize(text: str, is_debug: bool = False) -> List[str]:
         if is_debug:
             print(f"[TokenizerWordLevel] Tokenizing text: {text[:100]}...")
-        pattern: str = r"<BOS>|<EOS>|<SEP>|<UNK>"
-        tokens: List[str] = re.findall(pattern, text.lower(), re.UNICODE)
-        text = re.sub(pattern, "", text)
-        tokens += re.findall(r"\w+|[^\w\s]", text.lower(), re.UNICODE)
-        tokens += [" "]
+        # Tokenize text while preserving special tokens in their original order
+        pattern = r"<BOS>|<EOS>|<SEP>|<UNK>|\w+|[^\w\s]"
+        tokens = re.findall(pattern, text, re.UNICODE)
         return tokens
 
     @staticmethod
@@ -109,11 +107,16 @@ class TokenizerTitleToLyrics(TokenizerWordLevel):
         super(TokenizerTitleToLyrics, self).__init__()
 
     def tokenize(self, text: str) -> List[str]:
-        return super().tokenize(text) + ["<UNK>"]
+        # No longer append <UNK> at the end; just use parent logic
+        return super().tokenize(text)
     
     def build_vocab(self, token_lists: List[str], min_freq: int = 1, is_debug: bool = False) -> Tuple[Dict[str, int], Dict[int, str]]:
         word2idx, idx2word = super().build_vocab(token_lists=token_lists, 
                                                  min_freq=min_freq, 
                                                  is_debug=is_debug)
-        
+        # Ensure <UNK> is always present
+        if "<UNK>" not in word2idx:
+            next_idx = max(word2idx.values(), default=-1) + 1
+            word2idx["<UNK>"] = next_idx
+            idx2word[next_idx] = "<UNK>"
         return word2idx, idx2word

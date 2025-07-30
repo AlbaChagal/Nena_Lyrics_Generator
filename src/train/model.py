@@ -49,7 +49,8 @@ class Model(nn.Module):
         tgt: Optional[torch.Tensor] = None,
         max_length: int = 128,
         start_token_idx: int = 0,
-        return_logits: bool = False
+        return_logits: bool = False,
+        return_last_logits: bool = False
     ) -> torch.Tensor:
         batch_size = src.size(0)
         device = src.device
@@ -63,8 +64,17 @@ class Model(nn.Module):
             output = self.transformer(src=src_emb, tgt=tgt_emb, tgt_mask=tgt_mask)
             logits = self.output_fc(output)  # (batch_size, tgt_seq_len, vocab_size)
             return logits
+        elif return_last_logits:
+            # For inference: return logits for the last token only
+            seq_len = src.size(1)
+            generated = src
+            tgt_emb = self.embedding(generated) + self.positional_encoding[:, :generated.size(1), :].to(device)
+            tgt_mask = self.transformer.generate_square_subsequent_mask(generated.size(1)).to(device)
+            output = self.transformer(src=src_emb, tgt=tgt_emb, tgt_mask=tgt_mask)
+            logits = self.output_fc(output)  # (batch_size, seq_len, vocab_size)
+            return logits[:, -1, :]  # (batch_size, vocab_size)
         else:
-            # Autoregressive generation for inference
+            # Autoregressive generation for inference (greedy)
             generated = torch.full((batch_size, 1), start_token_idx, dtype=torch.long, device=device)
             for _ in range(max_length):
                 tgt_emb = self.embedding(generated) + self.positional_encoding[:, :generated.size(1), :].to(device)

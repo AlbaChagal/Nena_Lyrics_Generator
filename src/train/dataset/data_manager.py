@@ -24,6 +24,12 @@ class DataManager:
         self.random_state: np.random.RandomState = random_state
         self.dataset: Optional[Union[CharDataset, WordDataset, TitleToLyricsDataset]] = None
         self.tokenizer: Optional[Tokenizer] = None
+        if self.training_config.dataset_class == DatasetType.CharDataset:
+            self.tokenizer = TokenizerCharLevel()
+        elif self.training_config.dataset_class == DatasetType.WordDataset:
+            self.tokenizer = TokenizerWordLevel()
+        else:
+            raise ValueError(f'unknown dataset class {training_config.dataset_class}')
         self.embedding_matrix: Optional[torch.Tensor] = embedding_matrix
         self.word2idx: Optional[Dict[str, int]] = None
         self.idx2word: Optional[Dict[int, str]] = None
@@ -76,14 +82,9 @@ class DataManager:
             training_config: TrainingConfig,
             text: str,
             random_state: np.random.RandomState,
+            tokenizer: Tokenizer,
             is_debug: bool = False
     ) -> TitleToLyricsDataset:
-        if training_config.dataset_class == DatasetType.CharDataset:
-            tokenizer = TokenizerCharLevel()
-        elif training_config.dataset_class == DatasetType.WordDataset:
-            tokenizer = TokenizerWordLevel()
-        else:
-            raise ValueError(f'unknown dataset class {training_config.dataset_class}')
 
         # TitleToLyricsDataset always uses TokenizerTitleToLyrics
         title_to_lyrics_tokenizer: TokenizerTitleToLyrics = TokenizerTitleToLyrics()
