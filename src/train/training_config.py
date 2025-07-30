@@ -13,7 +13,8 @@ class TrainingConfig:
     def __init__(self):
 
         # Pretrained embedder params
-        self.loss_weight = 0.5
+        self.loss_weight = 1.0
+        self.newline_loss_weight: float = 1.0
         self.embedder_dim: int = 300
 
         # Tokenizer params

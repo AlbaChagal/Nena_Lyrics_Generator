@@ -23,7 +23,7 @@ class DataManager:
         self.training_config: TrainingConfig = training_config
         self.random_state: np.random.RandomState = random_state
         self.dataset: Optional[Union[CharDataset, WordDataset, TitleToLyricsDataset]] = None
-        self.tokenizer: Optional[Tokenizer] = None
+        self.tokenizer: Tokenizer
         if self.training_config.dataset_class == DatasetType.CharDataset:
             self.tokenizer = TokenizerCharLevel()
         elif self.training_config.dataset_class == DatasetType.WordDataset:
@@ -55,7 +55,8 @@ class DataManager:
             self.get_datasets(training_config=self.training_config, 
                               text=text, 
                               random_state=self.random_state, 
-                              is_debug=self.is_debug)
+                              is_debug=self.is_debug,
+                              tokenizer=self.tokenizer)
         if self.is_debug:
             print(f"[DataManager][load_data] Loaded dataset with vocab size: {len(self.dataset.vocab)}")
             print(f"[DataManager][load_data] Loaded word2idx {list(self.dataset.idx2word.values())[:100]}...")

@@ -14,6 +14,7 @@ from src.train.dataset.data_manager import DataManager
 from src.train.dataset.word_dataset import WordDataset
 from src.train.losses.regularization_loss import WordsInTextCounter
 from src.train.losses.training_losses import NextCharacterLoss, MaskedCharacterLoss, TitleToLyricsLoss
+from src.train.losses.newline_loss import newline_prediction_loss
 from src.train.model import Model
 from src.train.tensorboard_logger import TensorboardLogger
 from src.train.training_config import TrainingConfig
@@ -162,6 +163,7 @@ class Trainer:
 
         for epoch in range(self.training_config.num_epochs):
             total_loss = 0.0
+            total_newline_loss = 0.0
             # The dataset now yields (input, target) pairs for random prefixes (autoregressive training)
             for ttl_step_in_epoch, (input_tensor, target_tensor) in enumerate(train_loader):
                 input_tensor = input_tensor.to(device)
@@ -171,12 +173,24 @@ class Trainer:
                 assert self.data_manager.dataset is not None, "Dataset is not initialized"
                 vocab_size = len(self.data_manager.dataset.vocab)
                 loss = self.calc_loss(logits=logits, y=target_tensor, vocab_size=vocab_size, is_debug=self.is_debug)
+                idx2word = getattr(self.data_manager.dataset, 'idx2word', None)
+                word2idx = getattr(self.data_manager.dataset, 'word2idx', None)
+                if idx2word is None or word2idx is None:
+                    idx2word = {}
+                    word2idx = {}
+                seq_len_logits = logits.shape[1]
+                y_target = target_tensor[:, 1:1+seq_len_logits]
+                newline_loss = newline_prediction_loss(logits, y_target, idx2word, word2idx)
+                newline_loss_weight = self.training_config.newline_loss_weight
+                total_loss_tensor = loss + (newline_loss_weight * newline_loss)
 
-                loss.backward()
+                total_loss_tensor.backward()
                 optimizer.step()
                 optimizer.zero_grad()
                 loss_item = loss.item()
+                newline_loss_item = newline_loss.item()
                 total_loss += loss_item
+                total_newline_loss += newline_loss_item
 
                 with torch.no_grad():
                     idx2char = getattr(self.data_manager.dataset, 'idx2word', None)
@@ -187,14 +201,30 @@ class Trainer:
                         idx2char=idx2char
                     )
 
+                # Calculate output length (tokens until <EOS> in target)
+                eos_token_id = word2idx.get("<EOS>", None)
+                if eos_token_id is not None:
+                    # y_target is (1, seq_len), flatten to (seq_len,)
+                    y_target_flat = y_target[0].tolist()
+                    if eos_token_id in y_target_flat:
+                        output_length = y_target_flat.index(eos_token_id) + 1
+                    else:
+                        output_length = len(y_target_flat)
+                else:
+                    output_length = len(y_target_flat)
                 self.train_tensorboard_logger.update(loss=loss_item, 
-                                                     word_percentage_in_output=word_percentage_in_output)
+                                                     word_percentage_in_output=word_percentage_in_output,
+                                                     newline_loss=newline_loss_item,
+                                                     output_length=output_length)
                 total_num_steps += 1
                 if total_num_steps > 0 and total_num_steps % 100 == 0:
+                    avg_output_length = self.train_tensorboard_logger.output_length / self.train_tensorboard_logger.num_updates
                     print(f"Epoch {epoch + 1}, "
                           f"Step {total_num_steps}, "
-                          f"Loss: {loss.item():.4f}, " 
-                          f"Word Percentage in Output: {word_percentage_in_output:.4f}")
+                          f"Loss: {loss.item():.4f}, "
+                          f"NewlineLoss: {newline_loss_item:.4f}, "
+                          f"Word Percentage in Output: {word_percentage_in_output:.4f}, "
+                          f"Avg Output Length: {avg_output_length:.2f}")
 
                 if total_num_steps > 0 and total_num_steps % self.training_config.save_checkpoint_freq == 0:
                     self.save_checkpoint(model_state_dict=model.state_dict(),
@@ -205,6 +235,7 @@ class Trainer:
                                          embedding_matrix=None)
 
                     val_loss = 0.0
+                    val_newline_loss = 0.0
                     with torch.no_grad():
                         for val_input, val_target in val_loader:
                             val_input = val_input.to(device)
@@ -213,7 +244,16 @@ class Trainer:
                             val_logits = model(src=val_input, tgt=val_target, max_length=max_length, start_token_idx=0, return_logits=True)
                             vocab_size = len(self.data_manager.dataset.vocab)
                             loss = self.calc_loss(logits=val_logits, y=val_target, vocab_size=vocab_size)
+                            idx2word = getattr(self.data_manager.dataset, 'idx2word', None)
+                            word2idx = getattr(self.data_manager.dataset, 'word2idx', None)
+                            if idx2word is None or word2idx is None:
+                                idx2word = {}
+                                word2idx = {}
+                            seq_len_logits = val_logits.shape[1]
+                            y_target = val_target[:, 1:1+seq_len_logits]
+                            newline_loss = newline_prediction_loss(val_logits, y_target, idx2word, word2idx)
                             val_loss += loss.item()
+                            val_newline_loss += newline_loss.item() if hasattr(newline_loss, 'item') else float(newline_loss)
 
                             idx2char = getattr(self.data_manager.dataset, 'idx2word', None)
                             if idx2char is None:
@@ -223,10 +263,24 @@ class Trainer:
                                 idx2char=idx2char
                             )
 
+                            # Calculate output length (tokens until <EOS> in target)
+                            eos_token_id = word2idx.get("<EOS>", None)
+                            if eos_token_id is not None:
+                                y_target_flat = y_target[0].tolist()
+                                if eos_token_id in y_target_flat:
+                                    output_length = y_target_flat.index(eos_token_id) + 1
+                                else:
+                                    output_length = len(y_target_flat)
+                            else:
+                                output_length = len(y_target_flat)
                             self.val_tensorboard_logger.update(loss=loss.item(), 
-                                                               word_percentage_in_output=word_percentage_in_output_val)
+                                                               word_percentage_in_output=word_percentage_in_output_val,
+                                                               newline_loss=newline_loss.item() if hasattr(newline_loss, 'item') else float(newline_loss),
+                                                               output_length=output_length)
                     avg_val_loss = val_loss / len(val_loader)
-                    print(f"Epoch {epoch + 1} Validation Loss: {avg_val_loss:.4f}")
+                    avg_val_newline_loss = val_newline_loss / len(val_loader)
+                    avg_val_output_length = self.val_tensorboard_logger.output_length / self.val_tensorboard_logger.num_updates
+                    print(f"Epoch {epoch + 1} Validation Loss: {avg_val_loss:.4f}, NewlineLoss: {avg_val_newline_loss:.4f}, Avg Output Length: {avg_val_output_length:.2f}")
                     # Log validation loss and perplexity to Tensorboard
                     self.val_tensorboard_logger.log(total_num_steps)
 

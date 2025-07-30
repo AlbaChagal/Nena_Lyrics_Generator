@@ -88,5 +88,9 @@ class TitleToLyricsDataset(Dataset):
                 with open(path, encoding="utf-8") as f:
                     lyrics: str = f.read().strip()
                     if lyrics:
-                        pairs.append((title, lyrics))
+                        # Ensure every line ends with '\n'
+                        lines = lyrics.splitlines()
+                        lines = [line if line.endswith("\n") else line + "\n" for line in lines]
+                        lyrics_with_newlines = "".join(lines)
+                        pairs.append((title, lyrics_with_newlines))
         self.pairs = pairs

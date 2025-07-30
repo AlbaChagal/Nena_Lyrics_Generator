@@ -73,9 +73,11 @@ class SongGenerator:
         # Tokenize input title
         if self.training_config.dataset_class == DatasetType.WordDataset:
             # Use the tokenizer from data_manager for consistency
-            assert hasattr(self.data_manager, "tokenizer") and self.data_manager.tokenizer is not None, "Tokenizer must be set in data_manager."
-            tokens = self.data_manager.tokenizer.tokenize(input_title)
-            input_ids = [self.word2idx.get(tok, self.word2idx.get("<UNK>")) for tok in tokens]
+            assert hasattr(self.data_manager, "tokenizer") and self.data_manager.tokenizer is not None, \
+                "Tokenizer must be set in data_manager."
+            # Prepend <BOS> and <SEP> to match training input format
+            tokens = self.data_manager.tokenizer.tokenize(f"<BOS>{input_title}<SEP>")
+            input_ids = [self.word2idx[tok] for tok in tokens]
         elif self.training_config.dataset_class == DatasetType.CharDataset:
             input_ids = [self.word2idx.get(c, self.word2idx.get("<UNK>", 0)) for c in input_title]
         else:
@@ -88,6 +90,7 @@ class SongGenerator:
 
         self.model.eval()
         with torch.no_grad():
+            num_unknowns: int = 0
             for _ in range(length):
                 input_tensor = torch.tensor([generated_ids], dtype=torch.long)
                 # Get logits for the last token
@@ -106,6 +109,13 @@ class SongGenerator:
         if "<EOS>" in output_tokens:
             output_tokens = output_tokens[:output_tokens.index("<EOS>")]
 
+        # Remove all <UNK>s from predictions and print how many were removed
+        if unk_token_id in output_tokens:
+            original_output_token_length = len(output_tokens)
+            output_tokens = [token for token in output_tokens if token != "<UNK>"]
+            print(f'removed {original_output_token_length - len(output_tokens)} '
+                  f'tokens because they were all {unk_token_id}')
+
         # Join output appropriately
         if self.training_config.dataset_class == DatasetType.WordDataset:
             output_text = " ".join(output_tokens)
@@ -117,9 +127,9 @@ class SongGenerator:
 if __name__ == "__main__":
     """Infer a model with a single title"""
 
-    title = "101 luftbaloons"
-    model_id = '20250730_110916'
-    checkpoint_name = 'checkpoint_1016000.pt'
+    title = 'Luftballon wünschen'
+    model_id = '20250730_133642'
+    checkpoint_name = 'checkpoint_2071000.pt'
     model_dir = os.path.join(checkpoints_dir, model_id)
     model_path = os.path.join(model_dir, checkpoint_name)
 
@@ -135,4 +145,6 @@ if __name__ == "__main__":
     lyrics = generator.generate(input_title=title)
 
     print("Generated Lyrics")
+    print(title)
+    print('\n')
     print(lyrics)

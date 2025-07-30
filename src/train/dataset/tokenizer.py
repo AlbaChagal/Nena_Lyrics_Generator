@@ -24,7 +24,7 @@ class Tokenizer:
             print(f'Counter most common: {counter.most_common(10)}')
 
         # Always include special tokens
-        special_tokens = ["<UNK>", "<BOS>", "<EOS>", "<SEP>"]
+        special_tokens = ["<UNK>", "<BOS>", "<EOS>", "<SEP>", "\n"]
         vocab: List[str] = [char for char, freq in counter.items() if freq >= min_freq]
         for token in special_tokens:
             if token not in vocab:
@@ -54,16 +54,22 @@ class TokenizerWordLevel(Tokenizer):
     def tokenize(text: str, is_debug: bool = False) -> List[str]:
         if is_debug:
             print(f"[TokenizerWordLevel] Tokenizing text: {text[:100]}...")
-        # Tokenize text while preserving special tokens in their original order
-        pattern = r"<BOS>|<EOS>|<SEP>|<UNK>|\w+|[^\w\s]"
-        tokens = re.findall(pattern, text, re.UNICODE)
-        return tokens
+        # Extract special tokens and newlines as-is (case-sensitive)
+        pattern = r"<BOS>|<EOS>|<SEP>|<UNK>|\n"  # Match actual newline character
+        special_tokens = re.findall(pattern, text)
+        # Remove special tokens/newlines for further tokenization
+        text_wo_special = re.sub(pattern, "", text)
+        # Tokenize the rest (word-level, keep punctuation)
+        tokens = re.findall(r"\w+|[^\w\s]", text_wo_special, re.UNICODE)
+        # Combine special tokens and regular tokens in order
+        return special_tokens + tokens
 
     @staticmethod
     def counter(token_lists: List[str]) -> Counter:
         return Counter(token_lists)
 
     
+    @classmethod
     def build_vocab(cls, token_lists: List[str], min_freq: int = 1, is_debug: bool = False) -> Tuple[Dict[str, int], Dict[int, str]]:
         if is_debug:
             print(f"[TokenizerWordLevel] Building vocabulary with min_freq={min_freq}")
@@ -71,7 +77,12 @@ class TokenizerWordLevel(Tokenizer):
         if is_debug:
             print(f'[TokenizerWordLevel] Counter most common: {counter.most_common(10)}')
 
+        # Always include special tokens, including '\n'
+        special_tokens = ["<UNK>", "<BOS>", "<EOS>", "<SEP>", "\n"]
         vocab: List[str] = [word for word, freq in counter.items() if freq >= min_freq]
+        for token in special_tokens:
+            if token not in vocab:
+                vocab.append(token)
         vocab = sorted(vocab)
 
         if is_debug:
@@ -114,9 +125,10 @@ class TokenizerTitleToLyrics(TokenizerWordLevel):
         word2idx, idx2word = super().build_vocab(token_lists=token_lists, 
                                                  min_freq=min_freq, 
                                                  is_debug=is_debug)
-        # Ensure <UNK> is always present
-        if "<UNK>" not in word2idx:
-            next_idx = max(word2idx.values(), default=-1) + 1
-            word2idx["<UNK>"] = next_idx
-            idx2word[next_idx] = "<UNK>"
+        # Ensure <UNK> and '\n' are always present
+        for special in ["<UNK>", "\n"]:
+            if special not in word2idx:
+                next_idx = max(word2idx.values(), default=-1) + 1
+                word2idx[special] = next_idx
+                idx2word[next_idx] = special
         return word2idx, idx2word
