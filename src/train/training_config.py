@@ -13,8 +13,9 @@ class TrainingConfig:
     def __init__(self):
 
         # Pretrained embedder params
-        self.loss_weight = 1.0
-        self.newline_loss_weight: float = 1.0
+        self.loss_weight = 0.9
+        self.newline_loss_weight: float = 0.05
+        self.eos_loss_weight: float = 0.05
         self.embedder_dim: int = 300
 
         # Tokenizer params
@@ -31,7 +32,7 @@ class TrainingConfig:
         self.save_checkpoint_freq: int = 1000
 
         # Loss params
-        self.learning_rate: float = 0.0001
+        self.learning_rate: float = 0.0005
         self.weight_decay: float = 1e-5
 
         # Log params
