@@ -12,11 +12,13 @@ class DatasetType(Enum):
 class TrainingConfig:
     def __init__(self):
 
-        # Pretrained embedder params
-        self.loss_weight = 0.9
+        # Loss params
+        self.general_character_loss_weight = 0.8
         self.newline_loss_weight: float = 0.05
         self.eos_loss_weight: float = 0.05
-        self.embedder_dim: int = 300
+        self.unknown_loss_weight: float = 0.05
+        self.separator_loss_weight: float = 0.05
+        self.bos_loss_weight: float = 0.05
 
         # Tokenizer params
         self.char_block_size: int = 128
@@ -25,8 +27,9 @@ class TrainingConfig:
         # Data params
         self.random_seed: int = 0
         self.dataset_class: Union[DatasetType, str] = DatasetType.WordDataset
-        self.num_epochs: int = 600
+        self.num_epochs: int = 10
         self.batch_size: int = 32
+        self.percentage_of_data_to_use_as_validation: float = 0.1
 
         # Checkpoint params
         self.save_checkpoint_freq: int = 1000

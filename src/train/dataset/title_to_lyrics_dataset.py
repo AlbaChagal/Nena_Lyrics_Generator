@@ -19,8 +19,8 @@ class TitleToLyricsDataset(Dataset):
         self.pairs: Optional[List[Tuple[str, str]]] = None
         self.tokenizer: Tokenizer = tokenizer
         self.max_length: int = max_length
-        self.word2idx: Optional[Dict[str, int]] = word2idx
-        self.idx2word: Optional[Dict[int, str]] = idx2word
+        self.word2idx: Dict[str, int] = word2idx
+        self.idx2word: Dict[int, str] = idx2word
         self.is_debug: bool = is_debug
 
     def __len__(self) -> int:

@@ -1,21 +1,25 @@
 import datetime
 import json
 import os
-from typing import Union, Optional, List, Tuple
+from typing import Union, Optional, List, Tuple, Dict
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from src.global_constants import checkpoints_dir, config_json_name, tensorboard_log_dir
+from src.global_constants import checkpoints_dir, config_json_name, tensorboard_log_dir, eos_token, new_line_token
 
 from src.train.dataset.char_dataset import CharDataset
 from src.train.dataset.data_manager import DataManager
+from src.train.dataset.title_to_lyrics_dataset import TitleToLyricsDataset
 from src.train.dataset.word_dataset import WordDataset
+from src.train.losses.losses_datastructs import AllLosses
 from src.train.losses.regularization_loss import WordsInTextCounter
-from src.train.losses.training_losses import NextCharacterLoss, MaskedCharacterLoss, TitleToLyricsLoss
-from src.train.losses.newline_loss import newline_prediction_loss
-from src.train.losses.eos_loss import eos_prediction_loss
+from src.train.losses.training_losses import LossFunction
+
+
+from src.train.metrics.metrics_calculator import AllMetricsCalculator
+from src.train.metrics.metrics_datastructs import AllMetrics
 from src.train.model import Model
 from src.train.tensorboard_logger import TensorboardLogger
 from src.train.training_config import TrainingConfig
@@ -30,20 +34,18 @@ class Trainer:
         """
 
         self.is_debug: bool = is_debug
+        self.device: torch.device = self.get_device()
         self.model_id: str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.outputs_dir: str = os.path.join(checkpoints_dir, self.model_id)
         os.makedirs(self.outputs_dir, exist_ok=True)
         self.training_config: TrainingConfig = training_config
         self.data_manager: DataManager = data_manager
-        self.dataset: Optional[Union[CharDataset, WordDataset]] = None
+        self.dataset: Optional[Union[CharDataset, WordDataset, TitleToLyricsDataset]] = None
         self.train_tensorboard_logger: TensorboardLogger = \
             TensorboardLogger(os.path.join(self.outputs_dir, tensorboard_log_dir, 'train'))
         self.val_tensorboard_logger: TensorboardLogger = \
             TensorboardLogger(os.path.join(self.outputs_dir, tensorboard_log_dir, 'val'))
-
-        self.next_loss: NextCharacterLoss = NextCharacterLoss()
-        self.mask_loss: MaskedCharacterLoss = MaskedCharacterLoss()
-        self.ttl_loss: TitleToLyricsLoss = TitleToLyricsLoss()
+        self.loss_function: LossFunction = LossFunction(self.training_config, device=self.device)
         self.word_regulator_loss: WordsInTextCounter = WordsInTextCounter(is_debug=self.is_debug)
 
     @staticmethod
@@ -96,80 +98,16 @@ class Trainer:
         self.train_tensorboard_logger.log(total_num_steps)
         print(f"logged training step {total_num_steps} to Tensorboard at {self.train_tensorboard_logger.log_dir}")
 
-    def calc_loss(self, logits: torch.Tensor, y: torch.Tensor, vocab_size: int, is_debug: bool = False) -> torch.Tensor:
-        # logits: (batch_size, seq_len, vocab_size)
-        # y: (batch_size, seq_len)
-        if is_debug:
-            print(f"logits.shape: {logits.shape}")
-            print(f"y.shape: {y.shape}")
-            print(f"vocab_size: {vocab_size}")
-            print(f"logits.numel(): {logits.numel()}, y.numel(): {y.numel()}")
-        loss_fn = torch.nn.CrossEntropyLoss(ignore_index=0)  # assuming 0 is <PAD>
-        seq_len_logits = logits.shape[1]
-        y_target = y[:, 1:1+seq_len_logits]  # match logits' sequence length
-        logits_flat = logits.contiguous().view(-1, vocab_size)
-        y_flat = y_target.contiguous().view(-1)
-        if is_debug:
-            print(f"logits_flat.shape: {logits_flat.shape}, y_flat.shape: {y_flat.shape}")
-        loss: torch.Tensor = loss_fn(logits_flat, y_flat)
-        return loss * self.training_config.loss_weight
-    @staticmethod
-    def calc_eos_metrics(
-        logits: torch.Tensor,
-        eos_token_id: Optional[int],
-        y_target_flat: List[int]
-    ) -> Tuple[float, float, int, int, int, int]:
-        # Calculate EOS TPR/TNR
-        pred_ids = logits.argmax(-1)[0].tolist()
-        tp = fn = tn = fp = 0
-        if eos_token_id is not None:
-            true_eos = [i for i, t in enumerate(y_target_flat) if t == eos_token_id]
-            true_not_eos = [i for i, t in enumerate(y_target_flat) if t != eos_token_id]
-            tp = sum(1 for i in true_eos if pred_ids[i] == eos_token_id)
-            fn = sum(1 for i in true_eos if pred_ids[i] != eos_token_id)
-            tn = sum(1 for i in true_not_eos if pred_ids[i] != eos_token_id)
-            fp = sum(1 for i in true_not_eos if pred_ids[i] == eos_token_id)
-            tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-            tnr = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-        else:
-            tpr = 0.0
-            tnr = 0.0
-        return tpr, tnr, tp, fn, tn, fp
-    @staticmethod
-    def calc_new_line_metrics(
-            logits: torch.Tensor,
-            newline_token_id: Optional[int],
-            y_target_flat: List[int]
-    ) -> Tuple[float, float, int, int, int, int]:
-        # Calculate newline TPR/TNR
-        pred_ids = logits.argmax(-1)[0].tolist()
-        tp = fn = tn = fp = 0
-        if newline_token_id is not None:
-            true_newline = [i for i, t in enumerate(y_target_flat) if t == newline_token_id]
-            true_not_newline = [i for i, t in enumerate(y_target_flat) if t != newline_token_id]
-            tp = sum(1 for i in true_newline if pred_ids[i] == newline_token_id)
-            fn = sum(1 for i in true_newline if pred_ids[i] != newline_token_id)
-            tn = sum(1 for i in true_not_newline if pred_ids[i] != newline_token_id)
-            fp = sum(1 for i in true_not_newline if pred_ids[i] == newline_token_id)
-            tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-            tnr = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-        else:
-            tpr = 0.0
-            tnr = 0.0
-
-        return tpr, tnr, tp, fn, tn, fp
-
-
     def train(self):
 
-        device: torch.device = self.get_device()
-        print(f'started training model: {self.model_id} on device: {device}')
+        print(f'started training model: {self.model_id} on device: {self.device}')
 
         # Load data and split into train/val
-        dataloader = self.data_manager.load_data()
+        dataloader: DataLoader = self.data_manager.load_data()
+        word2idx: Dict[str, int] = self.data_manager.dataset.word2idx
         # Split ttl_dataloader into train and val
-        ttl_dataset = dataloader.dataset
-        val_split = 0.1
+        ttl_dataset: TitleToLyricsDataset = dataloader.dataset
+        val_split = self.training_config.percentage_of_data_to_use_as_validation
         val_size = int(len(ttl_dataset) * val_split)
         train_size = len(ttl_dataset) - val_size
         train_dataset, val_dataset = torch.utils.data.random_split(ttl_dataset, [train_size, val_size])
@@ -177,16 +115,13 @@ class Trainer:
         print(f'Train dataset size: {len(train_dataset)}')
         print(f'Validation dataset size: {len(val_dataset)}')
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=False)
-
-        assert self.data_manager.dataset is not None, "Dataset is not initialized"
-        model: Model = Model(vocab_size=len(self.data_manager.dataset),
-                             training_config=self.training_config).to(device)
+        all_metrics_calculator: AllMetricsCalculator = AllMetricsCalculator(word2idx, device=self.device)
         if self.is_debug:
             print('Initialized model')
 
         vocab_size = len(self.data_manager.dataset.vocab)
         model: Model = Model(vocab_size=vocab_size,
-                            training_config=self.training_config).to(device)
+                             training_config=self.training_config).to(self.device)
         if self.is_debug:
             print(f'Initialized model with vocab_size={vocab_size}')
 
@@ -198,7 +133,7 @@ class Trainer:
 
         self.save_training_config()
 
-        total_loss: float
+        total_losses: AllLosses = AllLosses()
         logits: torch.Tensor
         loss: torch.Tensor
 
@@ -207,39 +142,29 @@ class Trainer:
         print("Training - start")
         total_num_steps: int = 0
 
+
         for epoch in range(self.training_config.num_epochs):
-            total_loss = 0.0
-            total_newline_loss = 0.0
-            # The dataset now yields (input, target) pairs for random prefixes (autoregressive training)
             for ttl_step_in_epoch, (input_tensor, target_tensor) in enumerate(train_loader):
-                input_tensor = input_tensor.to(device)
-                target_tensor = target_tensor.to(device)
+                input_tensor = input_tensor.to(self.device)
+                target_tensor = target_tensor.to(self.device)
                 max_length = target_tensor.size(1)
                 logits = model(src=input_tensor, tgt=target_tensor, max_length=max_length, start_token_idx=0, return_logits=True)
                 assert self.data_manager.dataset is not None, "Dataset is not initialized"
-                vocab_size = len(self.data_manager.dataset.vocab)
-                loss = self.calc_loss(logits=logits, y=target_tensor, vocab_size=vocab_size, is_debug=self.is_debug)
-                idx2word = getattr(self.data_manager.dataset, 'idx2word', None)
-                word2idx = getattr(self.data_manager.dataset, 'word2idx', None)
-                if idx2word is None or word2idx is None:
-                    idx2word = {}
-                    word2idx = {}
+
+                # Always slice target to match logits' sequence length for loss computation
                 seq_len_logits = logits.shape[1]
                 y_target = target_tensor[:, 1:1+seq_len_logits]
-                newline_loss = newline_prediction_loss(logits, y_target, idx2word, word2idx)
-                newline_loss_weight = self.training_config.newline_loss_weight
-                eos_loss = eos_prediction_loss(logits, y_target, idx2word, word2idx)
-                eos_loss_weight = self.training_config.eos_loss_weight
-                total_loss_tensor = loss + (newline_loss_weight * newline_loss) + (eos_loss_weight * eos_loss)
-
-                total_loss_tensor.backward()
+                # Compute all losses (main + special tokens)
+                loss, step_all_losses = self.loss_function(logits=logits, labels=y_target, word2idx=word2idx)
+                loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
-                loss_item = loss.item()
-                newline_loss_item = newline_loss.item()
-                eos_loss_item = eos_loss.item()
-                total_loss += loss_item
-                total_newline_loss += newline_loss_item
+
+                total_losses += step_all_losses
+
+                # Compute metrics for all special tokens
+                y_target_flat = y_target[0].tolist()
+                all_metrics: AllMetrics = all_metrics_calculator.calculate(logits=logits, labels=y_target)
 
                 with torch.no_grad():
                     idx2char = getattr(self.data_manager.dataset, 'idx2word', None)
@@ -251,55 +176,23 @@ class Trainer:
                     )
 
                 # Calculate output length (tokens until <EOS> in target)
-                eos_token_id = word2idx.get("<EOS>", None)
-                newline_token_id = word2idx.get("\n", None)
-                y_target_flat = y_target[0].tolist()
-
-                tpr, tnr, tp, fn, tn, fp = self.calc_new_line_metrics(
-                    logits=logits,
-                    newline_token_id=newline_token_id,
-                    y_target_flat=y_target_flat
-                )
-
-                if eos_token_id is not None:
-                    if eos_token_id in y_target_flat:
-                        output_length = y_target_flat.index(eos_token_id) + 1
-                    else:
-                        output_length = len(y_target_flat)
+                eos_token_id = word2idx[eos_token]
+                if eos_token_id in y_target_flat:
+                    output_length = y_target_flat.index(eos_token_id) + 1
                 else:
                     output_length = len(y_target_flat)
-
-                tpr_eos, tnr_eos, tp_eos, fn_eos, tn_eos, fp_eos = self.calc_eos_metrics(
-                    logits=logits,
-                    eos_token_id=eos_token_id,
-                    y_target_flat=y_target_flat
+                self.train_tensorboard_logger.update(
+                    all_losses=total_losses,
+                    all_metrics=all_metrics,
+                    word_percentage_in_output=word_percentage_in_output,
+                    output_length=output_length
                 )
-                self.train_tensorboard_logger.update(loss=loss_item, 
-                                                     word_percentage_in_output=word_percentage_in_output,
-                                                     newline_loss=newline_loss_item,
-                                                     output_length=output_length,
-                                                     newline_tpr=tpr,
-                                                     newline_tnr=tnr,
-                                                     eos_loss=eos_loss_item,
-                                                     eos_tpr=tpr_eos,
-                                                     eos_tnr=tnr_eos)
+
                 total_num_steps += 1
                 if total_num_steps > 0 and total_num_steps % 100 == 0:
-                    avg_output_length = self.train_tensorboard_logger.output_length / self.train_tensorboard_logger.num_updates
-                    avg_tpr = self.train_tensorboard_logger.newline_tpr / self.train_tensorboard_logger.num_updates
-                    avg_tnr = self.train_tensorboard_logger.newline_tnr / self.train_tensorboard_logger.num_updates
-                    avg_eos_loss = self.train_tensorboard_logger.eos_loss / self.train_tensorboard_logger.num_updates
-                    avg_eos_tpr = self.train_tensorboard_logger.eos_tpr / self.train_tensorboard_logger.num_updates
-                    avg_eos_tnr = self.train_tensorboard_logger.eos_tnr / self.train_tensorboard_logger.num_updates
-                    print(f"Epoch {epoch + 1}, "
-                          f"Step {total_num_steps}, "
-                          f"Loss: {loss.item():.4f}, "
-                          f"NewlineLoss: {newline_loss_item:.4f}, "
-                          f"EOSLoss: {eos_loss_item:.4f}, "
-                          f"Word Percentage in Output: {word_percentage_in_output:.4f}, "
-                          f"Avg Output Length: {avg_output_length:.2f}, "
-                          f"Avg Newline TPR: {avg_tpr:.3f}, Avg Newline TNR: {avg_tnr:.3f}, "
-                          f"Avg EOS TPR: {avg_eos_tpr:.3f}, Avg EOS TNR: {avg_eos_tnr:.3f}")
+                    total_losses /= 100
+                    print(f"Epoch {epoch + 1}, Step {total_num_steps}, {total_losses}")
+                    self.train_tensorboard_logger.log(total_num_steps)
 
                 if total_num_steps > 0 and total_num_steps % self.training_config.save_checkpoint_freq == 0:
                     self.save_checkpoint(model_state_dict=model.state_dict(),
@@ -310,29 +203,21 @@ class Trainer:
                                          embedding_matrix=None)
 
                     val_loss = 0.0
-                    val_newline_loss = 0.0
-                    val_eos_loss = 0.0
                     with torch.no_grad():
                         for val_input, val_target in val_loader:
-                            val_input = val_input.to(device)
-                            val_target = val_target.to(device)
+                            val_input = val_input.to(self.device)
+                            val_target = val_target.to(self.device)
                             max_length = val_target.size(1)
                             val_logits = model(src=val_input, tgt=val_target, max_length=max_length, start_token_idx=0, return_logits=True)
-                            vocab_size = len(self.data_manager.dataset.vocab)
-                            loss = self.calc_loss(logits=val_logits, y=val_target, vocab_size=vocab_size)
-                            idx2word = getattr(self.data_manager.dataset, 'idx2word', None)
-                            word2idx = getattr(self.data_manager.dataset, 'word2idx', None)
-                            if idx2word is None or word2idx is None:
-                                idx2word = {}
-                                word2idx = {}
+                            # Always slice target to match logits' sequence length for loss computation
                             seq_len_logits = val_logits.shape[1]
                             y_target = val_target[:, 1:1+seq_len_logits]
-                            newline_loss = newline_prediction_loss(val_logits, y_target, idx2word, word2idx)
-                            eos_loss = eos_prediction_loss(val_logits, y_target, idx2word, word2idx)
-                            val_loss += loss.item()
-                            val_newline_loss += newline_loss.item() if hasattr(newline_loss, 'item') else float(newline_loss)
-                            val_eos_loss += eos_loss.item() if hasattr(eos_loss, 'item') else float(eos_loss)
-
+                            # Compute all losses (main + special tokens)
+                            val_loss_val, val_all_losses = self.loss_function(logits=val_logits, labels=y_target, word2idx=word2idx)
+                            val_loss += val_loss_val.item()
+                            # Compute metrics for all special tokens
+                            y_target_flat = y_target[0].tolist()
+                            val_all_metrics: AllMetrics = all_metrics_calculator.calculate(logits=val_logits, labels=y_target)
                             idx2char = getattr(self.data_manager.dataset, 'idx2word', None)
                             if idx2char is None:
                                 idx2char = {}
@@ -340,46 +225,19 @@ class Trainer:
                                 logits=val_logits,
                                 idx2char=idx2char
                             )
-
-                            # Calculate output length (tokens until <EOS> in target)
-                            y_target_flat = y_target[0].tolist()
-                            if eos_token_id is not None:
-                                if eos_token_id in y_target_flat:
-                                    output_length = y_target_flat.index(eos_token_id) + 1
-                                else:
-                                    output_length = len(y_target_flat)
+                            eos_token_id = word2idx[eos_token]
+                            if eos_token_id in y_target_flat:
+                                output_length = y_target_flat.index(eos_token_id) + 1
                             else:
                                 output_length = len(y_target_flat)
-                            tpr, tnr, tp, fn, tn, fp = self.calc_new_line_metrics(
-                                logits=val_logits,
-                                y_target_flat=y_target_flat,
-                                newline_token_id=newline_token_id
+                            self.val_tensorboard_logger.update(
+                                all_losses=val_all_losses,
+                                all_metrics=val_all_metrics,
+                                word_percentage_in_output=word_percentage_in_output_val,
+                                output_length=output_length
                             )
-                            tpr_eos, tnr_eos, tp_eos, fn_eos, tn_eos, fp_eos = self.calc_eos_metrics(
-                                logits=val_logits,
-                                eos_token_id=eos_token_id,
-                                y_target_flat=y_target_flat
-                            )
-                            self.val_tensorboard_logger.update(loss=loss.item(), 
-                                                               word_percentage_in_output=word_percentage_in_output_val,
-                                                               newline_loss=newline_loss.item() if hasattr(newline_loss, 'item') else float(newline_loss),
-                                                               output_length=output_length,
-                                                               newline_tpr=tpr,
-                                                               newline_tnr=tnr,
-                                                               eos_loss=eos_loss.item() if hasattr(eos_loss, 'item') else float(eos_loss),
-                                                               eos_tpr=tpr_eos,
-                                                               eos_tnr=tnr_eos)
                     avg_val_loss = val_loss / len(val_loader)
-                    avg_val_newline_loss = val_newline_loss / len(val_loader)
-                    avg_val_eos_loss = val_eos_loss / len(val_loader)
-                    avg_val_output_length = self.val_tensorboard_logger.output_length / self.val_tensorboard_logger.num_updates
-                    avg_val_tpr = self.val_tensorboard_logger.newline_tpr / self.val_tensorboard_logger.num_updates
-                    avg_val_tnr = self.val_tensorboard_logger.newline_tnr / self.val_tensorboard_logger.num_updates
-                    avg_val_eos_tpr = self.val_tensorboard_logger.eos_tpr / self.val_tensorboard_logger.num_updates
-                    avg_val_eos_tnr = self.val_tensorboard_logger.eos_tnr / self.val_tensorboard_logger.num_updates
-                    print(f"Epoch {epoch + 1} Validation Loss: {avg_val_loss:.4f}, NewlineLoss: {avg_val_newline_loss:.4f}, EOSLoss: {avg_val_eos_loss:.4f}, Avg Output Length: {avg_val_output_length:.2f}, Avg Newline TPR: {avg_val_tpr:.3f}, Avg Newline TNR: {avg_val_tnr:.3f}, Avg EOS TPR: {avg_val_eos_tpr:.3f}, Avg EOS TNR: {avg_val_eos_tnr:.3f}")
-                    # Log validation loss and perplexity to Tensorboard
-                    self.val_tensorboard_logger.log(total_num_steps)
+                    print(f"Epoch {epoch + 1} Validation Loss: {avg_val_loss:.4f}")
 
         self.train_tensorboard_logger.close()
 

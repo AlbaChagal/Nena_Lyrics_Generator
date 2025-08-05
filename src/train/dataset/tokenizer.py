@@ -52,13 +52,14 @@ class TokenizerWordLevel(Tokenizer):
 
     @staticmethod
     def tokenize(text: str, is_debug: bool = False) -> List[str]:
+        lower_text = text.lower()
         if is_debug:
-            print(f"[TokenizerWordLevel] Tokenizing text: {text[:100]}...")
+            print(f"[TokenizerWordLevel] Tokenizing text: {lower_text[:100]}...")
         # Extract special tokens and newlines as-is (case-sensitive)
         pattern = r"<BOS>|<EOS>|<SEP>|<UNK>|\n"  # Match actual newline character
-        special_tokens = re.findall(pattern, text)
+        special_tokens = re.findall(pattern, lower_text)
         # Remove special tokens/newlines for further tokenization
-        text_wo_special = re.sub(pattern, "", text)
+        text_wo_special = re.sub(pattern, "", lower_text)
         # Tokenize the rest (word-level, keep punctuation)
         tokens = re.findall(r"\w+|[^\w\s]", text_wo_special, re.UNICODE)
         # Combine special tokens and regular tokens in order

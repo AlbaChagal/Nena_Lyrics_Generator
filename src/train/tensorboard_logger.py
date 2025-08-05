@@ -1,88 +1,83 @@
+from typing import Union
+
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
+
+from src.train.losses.losses_datastructs import AllLosses
+from src.train.metrics.metrics_datastructs import AllMetrics, ConfusionMatrix, Metrics
 
 
 class TensorboardLogger:
     def __init__(self, log_dir: str) -> None:
         self.log_dir: str = log_dir
         self.writer: SummaryWriter = SummaryWriter(log_dir)
-        self.loss: float = 0.
+        self.all_losses: AllLosses = AllLosses()
         self.word_percentage_in_output: float = 0.
         self.newline_loss: float = 0.
         self.output_length: float = 0.
-        self.newline_tpr: float = 0.
-        self.newline_tnr: float = 0.
-        self.eos_loss: float = 0.
-        self.eos_tpr: float = 0.
-        self.eos_tnr: float = 0.
+        self.all_metrics: AllMetrics = AllMetrics.init_empty_instance()
         self.num_updates: int = 0
 
     def update(self,
-               loss: float,
+               all_losses: AllLosses,
                word_percentage_in_output: float,
+               all_metrics: AllMetrics,
                newline_loss: float = 0.0,
-               output_length: float = 0.0,
-               newline_tpr: float = 0.0,
-               newline_tnr: float = 0.0,
-               eos_loss: float = 0.0,
-               eos_tpr: float = 0.0,
-               eos_tnr: float = 0.0) -> None:
-        self.loss += loss
+               output_length: float = 0.0) -> None:
+        self.all_losses += all_losses
         self.word_percentage_in_output += word_percentage_in_output
         self.newline_loss += newline_loss
         self.output_length += output_length
-        self.newline_tpr += newline_tpr
-        self.newline_tnr += newline_tnr
-        self.eos_loss += eos_loss
-        self.eos_tpr += eos_tpr
-        self.eos_tnr += eos_tnr
+        self.all_metrics += all_metrics
         self.num_updates += 1
 
     def reset(self):
-        self.loss: float = 0.
+        self.all_losses: AllLosses = AllLosses()
         self.word_percentage_in_output: float = 0.
         self.newline_loss: float = 0.
         self.output_length: float = 0.
-        self.newline_tpr: float = 0.
-        self.newline_tnr: float = 0.
-        self.eos_loss: float = 0.
-        self.eos_tpr: float = 0.
-        self.eos_tnr: float = 0.
-        self.num_updates: int = 0
+        self.all_metrics: AllMetrics = AllMetrics.init_empty_instance()
+        self.num_updates = 0
 
     def close(self) -> None:
         self.reset()
         self.writer.close()
 
     def log(self, step: int) -> None:
-        # Losses
-        avg_loss: float = self.loss / self.num_updates
+        # Compute averages
+        all_avg_losses = self.all_losses / self.num_updates
+        all_avg_metrics = self.all_metrics / self.num_updates
         avg_word_percentage_in_output: float = self.word_percentage_in_output / self.num_updates
-        avg_newline_loss: float = self.newline_loss / self.num_updates
         avg_output_length: float = self.output_length / self.num_updates
-        avg_newline_tpr: float = self.newline_tpr / self.num_updates
-        avg_newline_tnr: float = self.newline_tnr / self.num_updates
-        avg_eos_loss: float = self.eos_loss / self.num_updates
-        avg_eos_tpr: float = self.eos_tpr / self.num_updates
-        avg_eos_tnr: float = self.eos_tnr / self.num_updates
 
-        # Perplexity
-        avg_perplexity: float = np.exp(avg_loss)
-        avg_word_percentage_in_output_preplexity: float = np.exp(avg_word_percentage_in_output)
-        avg_newline_perplexity: float = np.exp(avg_newline_loss)
+        # Log all losses
+        for loss_name in self.all_losses.__slots__:
+            self.writer.add_scalar(f"losses/{loss_name}", getattr(all_avg_losses, loss_name), step)
 
-        self.writer.add_scalar("losses/1.loss", avg_loss, step)
-        self.writer.add_scalar("losses/1.word_percentage_in_output", avg_word_percentage_in_output, step)
-        self.writer.add_scalar("losses/2.newline_loss", avg_newline_loss, step)
-        self.writer.add_scalar("losses/3.eos_loss", avg_eos_loss, step)
+        # Log all metrics
+        for single_metric_name in self.all_metrics.__slots__:
+            single_metrics: Metrics = getattr(all_avg_metrics, single_metric_name)
+            for slot in single_metrics.__slots__:
+                attr = getattr(single_metrics, slot)
+                if type(attr) == float:
+                    self.writer.add_scalar(f"metrics/{single_metric_name}_{attr}", attr, step)
+                elif type(attr) == ConfusionMatrix:
+                    for slot in attr.__slots__:
+                        self.writer.add_scalar(f"metrics/{single_metric_name}_{slot}",
+                                               getattr(attr, slot), step)
+                else:
+                    raise TypeError(f'all_metrics.{attr} is not a float or '
+                                    f'ConfusionMatrix, got: {type(attr)}')
+
+        # Log output stats
         self.writer.add_scalar("outputs/avg_output_length", avg_output_length, step)
-        self.writer.add_scalar("newline/TPR", avg_newline_tpr, step)
-        self.writer.add_scalar("newline/TNR", avg_newline_tnr, step)
-        self.writer.add_scalar("eos/TPR", avg_eos_tpr, step)
-        self.writer.add_scalar("eos/TNR", avg_eos_tnr, step)
+        self.writer.add_scalar("outputs/avg_word_percentage_in_output", avg_word_percentage_in_output, step)
 
-        self.writer.add_scalar("perplexity/1.perplexity", avg_perplexity, step)
-        self.writer.add_scalar("perplexity/1.word_percentage_in_output_perplexity", avg_word_percentage_in_output_preplexity, step)
-        self.writer.add_scalar("perplexity/2.newline_perplexity", avg_newline_perplexity, step)
+        # Log perplexity for each loss (if meaningful)
+        for loss_name in self.all_losses.__slots__:
+            avg_loss_val = getattr(all_avg_losses, loss_name)
+            if avg_loss_val > 0:
+                self.writer.add_scalar(f"perplexity/{loss_name}", float(np.exp(avg_loss_val)), step)
+
         self.reset()
 

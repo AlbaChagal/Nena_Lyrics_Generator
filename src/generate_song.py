@@ -128,8 +128,8 @@ if __name__ == "__main__":
     """Infer a model with a single title"""
 
     title = 'Luftballon wünschen'
-    model_id = '20250730_133642'
-    checkpoint_name = 'checkpoint_2071000.pt'
+    model_id = '20250731_094955'
+    checkpoint_name = 'checkpoint_1009000.pt'
     model_dir = os.path.join(checkpoints_dir, model_id)
     model_path = os.path.join(model_dir, checkpoint_name)
 
@@ -141,7 +141,68 @@ if __name__ == "__main__":
     generator = SongGenerator(model_path=model_path,
                               training_config=training_config_main,
                               data_manager=data_manager)
+
     generator.load_model(training_config_main)
+    # Ensure tokenizer is fitted to checkpoint vocab (for word-level models)
+    if hasattr(generator.data_manager, 'tokenizer') and generator.data_manager.tokenizer is not None:
+        # Try to fit using idx2word values (words)
+        vocab_words = list(generator.idx2word.values()) if generator.idx2word is not None else []
+        if hasattr(generator.data_manager.tokenizer, 'fit'):
+            generator.data_manager.tokenizer.fit(vocab_words)
+        elif hasattr(generator.data_manager.tokenizer, 'set_vocab'):
+            generator.data_manager.tokenizer.set_vocab(vocab_words)
+
+    # Debug: print tokenized input and input IDs
+    if hasattr(generator.data_manager, 'tokenizer') and generator.data_manager.tokenizer is not None:
+        tokens = generator.data_manager.tokenizer.tokenize(f"<BOS>{title}<SEP>")
+        print("Tokenized input:", tokens)
+        print("Input IDs:", [generator.word2idx.get(tok, -1) for tok in tokens])
+
+    # Patch SongGenerator.generate to print first generated tokens
+    import types
+    def generate_with_debug(self, input_title: str, length: int = 500, temperature: float = 0.4):
+        assert self.model is not None, 'model must be loaded before calling generate'
+        assert self.word2idx is not None, "word2idx must be set before generating lyrics"
+        assert self.idx2word is not None, "idx2word must be set before generating lyrics"
+        if self.training_config.dataset_class == DatasetType.WordDataset:
+            assert hasattr(self.data_manager, "tokenizer") and self.data_manager.tokenizer is not None, \
+                "Tokenizer must be set in data_manager."
+            tokens = self.data_manager.tokenizer.tokenize(f"<BOS>{input_title}<SEP>")
+            input_ids = [self.word2idx[tok] for tok in tokens]
+        elif self.training_config.dataset_class == DatasetType.CharDataset:
+            input_ids = [self.word2idx.get(c, self.word2idx.get("<UNK>", 0)) for c in input_title]
+        else:
+            raise ValueError("Unsupported dataset class for generation")
+        generated_ids = input_ids.copy()
+        eos_token_id = self.word2idx.get("<EOS>")
+        unk_token_id = self.word2idx.get("<UNK>")
+        self.model.eval()
+        with torch.no_grad():
+            for i in range(length):
+                input_tensor = torch.tensor([generated_ids], dtype=torch.long)
+                logits = self.model(src=input_tensor, return_last_logits=True)
+                next_token_logits = logits[0] / temperature
+                probs = torch.softmax(next_token_logits, dim=-1)
+                next_token_id = int(torch.multinomial(probs, num_samples=1).item())
+                print(f"Step {i+1}: Next token ID: {next_token_id}, Token: {self.idx2word.get(next_token_id, '<UNK>')}")
+                generated_ids.append(next_token_id)
+                if next_token_id == eos_token_id:
+                    print("<EOS> token generated, stopping.")
+                    break
+        output_tokens = [self.idx2word[idx] for idx in generated_ids[len(input_ids):]]
+        if "<EOS>" in output_tokens:
+            output_tokens = output_tokens[:output_tokens.index("<EOS>")]
+        if unk_token_id in output_tokens:
+            original_output_token_length = len(output_tokens)
+            output_tokens = [token for token in output_tokens if token != "<UNK>"]
+            print(f'removed {original_output_token_length - len(output_tokens)} tokens because they were all <UNK>')
+        if self.training_config.dataset_class == DatasetType.WordDataset:
+            output_text = " ".join(output_tokens)
+        else:
+            output_text = "".join(output_tokens)
+        return output_text.strip()
+
+    generator.generate = types.MethodType(generate_with_debug, generator)
     lyrics = generator.generate(input_title=title)
 
     print("Generated Lyrics")

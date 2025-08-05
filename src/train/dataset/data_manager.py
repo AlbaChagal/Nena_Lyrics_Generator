@@ -51,7 +51,7 @@ class DataManager:
     def load_data(self) -> DataLoader:
         text: str = self.load_vocab_file(training_config=self.training_config, is_debug=self.is_debug)
 
-        self.dataset = \
+        self.dataset: TitleToLyricsDataset = \
             self.get_datasets(training_config=self.training_config, 
                               text=text, 
                               random_state=self.random_state, 
