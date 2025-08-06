@@ -2,6 +2,8 @@ from collections import Counter
 import re
 from typing import List, Dict, Tuple, Callable
 
+from src.global_constants import get_all_special_tokens
+
 
 class Tokenizer:
     def __init__(self):
@@ -24,7 +26,7 @@ class Tokenizer:
             print(f'Counter most common: {counter.most_common(10)}')
 
         # Always include special tokens
-        special_tokens = ["<UNK>", "<BOS>", "<EOS>", "<SEP>", "\n"]
+        special_tokens = get_all_special_tokens()
         vocab: List[str] = [char for char, freq in counter.items() if freq >= min_freq]
         for token in special_tokens:
             if token not in vocab:
@@ -52,16 +54,15 @@ class TokenizerWordLevel(Tokenizer):
 
     @staticmethod
     def tokenize(text: str, is_debug: bool = False) -> List[str]:
-        lower_text = text.lower()
         if is_debug:
-            print(f"[TokenizerWordLevel] Tokenizing text: {lower_text[:100]}...")
+            print(f"[TokenizerWordLevel] Tokenizing text: {text[:100]}...")
         # Extract special tokens and newlines as-is (case-sensitive)
         pattern = r"<BOS>|<EOS>|<SEP>|<UNK>|\n"  # Match actual newline character
-        special_tokens = re.findall(pattern, lower_text)
+        special_tokens = re.findall(pattern, text)
         # Remove special tokens/newlines for further tokenization
-        text_wo_special = re.sub(pattern, "", lower_text)
+        text_wo_special = re.sub(pattern, "", text)
         # Tokenize the rest (word-level, keep punctuation)
-        tokens = re.findall(r"\w+|[^\w\s]", text_wo_special, re.UNICODE)
+        tokens = re.findall(r"\w+|[^\w\s]", text_wo_special.lower(), re.UNICODE)
         # Combine special tokens and regular tokens in order
         return special_tokens + tokens
 
@@ -118,16 +119,18 @@ class TokenizerTitleToLyrics(TokenizerWordLevel):
     def __init__(self):
         super(TokenizerTitleToLyrics, self).__init__()
 
-    def tokenize(self, text: str) -> List[str]:
-        # No longer append <UNK> at the end; just use parent logic
+    def tokenize(self, text: str, is_debug: bool = False) -> List[str]:
         return super().tokenize(text)
     
-    def build_vocab(self, token_lists: List[str], min_freq: int = 1, is_debug: bool = False) -> Tuple[Dict[str, int], Dict[int, str]]:
+    def build_vocab(self,
+                    token_lists: List[str],
+                    min_freq: int = 1,
+                    is_debug: bool = False) -> Tuple[Dict[str, int], Dict[int, str]]:
         word2idx, idx2word = super().build_vocab(token_lists=token_lists, 
                                                  min_freq=min_freq, 
                                                  is_debug=is_debug)
-        # Ensure <UNK> and '\n' are always present
-        for special in ["<UNK>", "\n"]:
+        # Ensure special tokens are in vocab
+        for special in get_all_special_tokens():
             if special not in word2idx:
                 next_idx = max(word2idx.values(), default=-1) + 1
                 word2idx[special] = next_idx

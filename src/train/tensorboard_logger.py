@@ -60,7 +60,7 @@ class TensorboardLogger:
             for slot in single_metrics.__slots__:
                 attr = getattr(single_metrics, slot)
                 if type(attr) == float:
-                    self.writer.add_scalar(f"metrics/{single_metric_name}_{attr}", attr, step)
+                    self.writer.add_scalar(f"metrics/{single_metric_name}", attr, step)
                 elif type(attr) == ConfusionMatrix:
                     for slot in attr.__slots__:
                         self.writer.add_scalar(f"metrics/{single_metric_name}_{slot}",

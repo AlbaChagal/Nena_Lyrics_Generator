@@ -69,6 +69,8 @@ class GeneralCharacterLoss(torch.nn.Module):
                 logits: torch.Tensor,
                 labels: torch.Tensor,
                 word2idx: Dict[str, int]) -> torch.Tensor:
+        if self.weight == 0.:
+            return torch.tensor(0., device=self.device)
 
         special_character_tokens: List[int] = \
             [word2idx[token] for token in self.special_characters]
@@ -97,6 +99,8 @@ class SpecialCharacterLossBase(torch.nn.Module):
                 logits: torch.Tensor,
                 labels: torch.Tensor,
                 word2idx: Dict[str, int]) -> torch.Tensor:
+        if self.weight == 0.:
+            return torch.tensor(0., device=self.device)
         assert self.special_character in word2idx, 'special_character must be in word2idx'
         assert self.special_character, 'special_character must be defined'
         eos_idx: int = word2idx[self.special_character]

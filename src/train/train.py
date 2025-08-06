@@ -6,6 +6,7 @@ from typing import Union, Optional, List, Tuple, Dict
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from src.global_constants import checkpoints_dir, config_json_name, tensorboard_log_dir, eos_token, new_line_token
 
@@ -61,6 +62,30 @@ class Trainer:
             print(f"Using device: {device}")
         return device
 
+    @staticmethod
+    def calc_output_length(word2idx: Dict[str, int], y_target_flat: List[int]) -> int:
+        eos_token_id: int = word2idx[eos_token]
+        output_length: int = y_target_flat.index(eos_token_id) + 1 if eos_token_id in y_target_flat \
+                             else len(y_target_flat)
+        return output_length
+
+    @staticmethod
+    def infer(model: Model,
+              input_tensor: torch.Tensor,
+              target_tensor: torch.Tensor,
+              device: torch.device) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+        input_tensor: torch.Tensor = input_tensor.to(device)
+        target_tensor: torch.Tensor = target_tensor.to(device)
+        max_length: int = target_tensor.size(1)
+        logits: torch.Tensor = model(src=input_tensor,
+                                     tgt=target_tensor,
+                                     max_length=max_length,
+                                     start_token_idx=0,
+                                     return_logits=True)
+
+        return logits, input_tensor, target_tensor
+
     def get_checkpoint_name(self, epoch: int, step: int) -> str:
         return f"{self.outputs_dir}/checkpoint_{step + int((epoch + 1) * 1000000)}.pt"
 
@@ -95,9 +120,6 @@ class Trainer:
         )
         print(f"Model saved to {checkpoint_path}")
 
-        self.train_tensorboard_logger.log(total_num_steps)
-        print(f"logged training step {total_num_steps} to Tensorboard at {self.train_tensorboard_logger.log_dir}")
-
     def train(self):
 
         print(f'started training model: {self.model_id} on device: {self.device}')
@@ -111,10 +133,14 @@ class Trainer:
         val_size = int(len(ttl_dataset) * val_split)
         train_size = len(ttl_dataset) - val_size
         train_dataset, val_dataset = torch.utils.data.random_split(ttl_dataset, [train_size, val_size])
-        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=True)
+        train_loader = torch.utils.data.DataLoader(train_dataset,
+                                                   batch_size=self.training_config.batch_size,
+                                                   shuffle=True)
         print(f'Train dataset size: {len(train_dataset)}')
         print(f'Validation dataset size: {len(val_dataset)}')
-        val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=False)
+        val_loader = torch.utils.data.DataLoader(val_dataset,
+                                                 batch_size=self.training_config.val_batch_size,
+                                                 shuffle=False)
         all_metrics_calculator: AllMetricsCalculator = AllMetricsCalculator(word2idx, device=self.device)
         if self.is_debug:
             print('Initialized model')
@@ -145,55 +171,43 @@ class Trainer:
 
         for epoch in range(self.training_config.num_epochs):
             for ttl_step_in_epoch, (input_tensor, target_tensor) in enumerate(train_loader):
-                input_tensor = input_tensor.to(self.device)
-                target_tensor = target_tensor.to(self.device)
-                max_length = target_tensor.size(1)
-                logits = model(src=input_tensor, tgt=target_tensor, max_length=max_length, start_token_idx=0, return_logits=True)
-                assert self.data_manager.dataset is not None, "Dataset is not initialized"
+                logits, input_tensor, target_tensor = self.infer(model=model,
+                                                                 input_tensor=input_tensor,
+                                                                 target_tensor=target_tensor,
+                                                                 device=self.device)
 
-                # Always slice target to match logits' sequence length for loss computation
+                # Calc losses
                 seq_len_logits = logits.shape[1]
-                y_target = target_tensor[:, 1:1+seq_len_logits]
-                # Compute all losses (main + special tokens)
+                y_target = target_tensor[:, 1: 1+seq_len_logits]
                 loss, step_all_losses = self.loss_function(logits=logits, labels=y_target, word2idx=word2idx)
+                total_losses += step_all_losses
+
+                # Step
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
 
-                total_losses += step_all_losses
-
-                # Compute metrics for all special tokens
-                y_target_flat = y_target[0].tolist()
-                all_metrics: AllMetrics = all_metrics_calculator.calculate(logits=logits, labels=y_target)
-
+                # Calc Metrics
                 with torch.no_grad():
-                    idx2char = getattr(self.data_manager.dataset, 'idx2word', None)
-                    if idx2char is None:
-                        idx2char = {}
+                    all_metrics: AllMetrics = all_metrics_calculator.calculate(logits=logits, labels=y_target)
                     word_percentage_in_output: float = self.word_regulator_loss.count_valid_words(
                         logits=logits,
-                        idx2char=idx2char
+                        idx2word=self.data_manager.dataset.idx2word
+                    )
+                    output_length = self.calc_output_length(word2idx=word2idx, y_target_flat=y_target[0].tolist())
+                    self.train_tensorboard_logger.update(
+                        all_losses=total_losses,
+                        all_metrics=all_metrics,
+                        word_percentage_in_output=word_percentage_in_output,
+                        output_length=output_length
                     )
 
-                # Calculate output length (tokens until <EOS> in target)
-                eos_token_id = word2idx[eos_token]
-                if eos_token_id in y_target_flat:
-                    output_length = y_target_flat.index(eos_token_id) + 1
-                else:
-                    output_length = len(y_target_flat)
-                self.train_tensorboard_logger.update(
-                    all_losses=total_losses,
-                    all_metrics=all_metrics,
-                    word_percentage_in_output=word_percentage_in_output,
-                    output_length=output_length
-                )
-
                 total_num_steps += 1
-                if total_num_steps > 0 and total_num_steps % 100 == 0:
-                    total_losses /= 100
+                if total_num_steps > 0 and total_num_steps % self.training_config.log_train_tensorboard_freq == 0:
+                    total_losses /= self.training_config.log_train_tensorboard_freq
                     print(f"Epoch {epoch + 1}, Step {total_num_steps}, {total_losses}")
                     self.train_tensorboard_logger.log(total_num_steps)
-
+                    total_losses = AllLosses()
                 if total_num_steps > 0 and total_num_steps % self.training_config.save_checkpoint_freq == 0:
                     self.save_checkpoint(model_state_dict=model.state_dict(),
                                          optimizer_state_dict=optimizer.state_dict(),
@@ -202,42 +216,36 @@ class Trainer:
                                          total_num_steps=total_num_steps,
                                          embedding_matrix=None)
 
-                    val_loss = 0.0
                     with torch.no_grad():
-                        for val_input, val_target in val_loader:
-                            val_input = val_input.to(self.device)
-                            val_target = val_target.to(self.device)
-                            max_length = val_target.size(1)
-                            val_logits = model(src=val_input, tgt=val_target, max_length=max_length, start_token_idx=0, return_logits=True)
-                            # Always slice target to match logits' sequence length for loss computation
-                            seq_len_logits = val_logits.shape[1]
-                            y_target = val_target[:, 1:1+seq_len_logits]
-                            # Compute all losses (main + special tokens)
-                            val_loss_val, val_all_losses = self.loss_function(logits=val_logits, labels=y_target, word2idx=word2idx)
-                            val_loss += val_loss_val.item()
-                            # Compute metrics for all special tokens
-                            y_target_flat = y_target[0].tolist()
-                            val_all_metrics: AllMetrics = all_metrics_calculator.calculate(logits=val_logits, labels=y_target)
-                            idx2char = getattr(self.data_manager.dataset, 'idx2word', None)
-                            if idx2char is None:
-                                idx2char = {}
+                        for val_input, val_target in tqdm(val_loader):
+                            val_logits, _, val_target = self.infer(model=model,
+                                                                   input_tensor=val_input,
+                                                                   target_tensor=val_target,
+                                                                   device=self.device)
+
+                            # Calc Losses
+                            y_target = val_target[:, 1: 1 +  val_logits.shape[1]]
+                            _, val_all_losses = self.loss_function(logits=val_logits,
+                                                                   labels=y_target,
+                                                                   word2idx=word2idx)
+
+                            # Calc metrics
+                            val_all_metrics: AllMetrics = all_metrics_calculator.calculate(logits=val_logits,
+                                                                                           labels=y_target)
                             word_percentage_in_output_val: float = self.word_regulator_loss.count_valid_words(
                                 logits=val_logits,
-                                idx2char=idx2char
+                                idx2word=self.data_manager.dataset.idx2word
                             )
-                            eos_token_id = word2idx[eos_token]
-                            if eos_token_id in y_target_flat:
-                                output_length = y_target_flat.index(eos_token_id) + 1
-                            else:
-                                output_length = len(y_target_flat)
+                            output_length = self.calc_output_length(word2idx=word2idx,
+                                                                    y_target_flat=y_target[0].tolist())
                             self.val_tensorboard_logger.update(
                                 all_losses=val_all_losses,
                                 all_metrics=val_all_metrics,
                                 word_percentage_in_output=word_percentage_in_output_val,
                                 output_length=output_length
                             )
-                    avg_val_loss = val_loss / len(val_loader)
-                    print(f"Epoch {epoch + 1} Validation Loss: {avg_val_loss:.4f}")
+                    avg_val_all_losses = val_all_losses / len(val_loader)
+                    print(f"Epoch {epoch + 1} Validation Loss: {avg_val_all_losses}")
 
         self.train_tensorboard_logger.close()
 
